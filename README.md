@@ -15,6 +15,9 @@ Here, Restate provides all of it, and the handlers read like the flow they imple
 
 The numbered steps trace one prompt. The source is [`docs/architecture.svg`](docs/architecture.svg).
 
+For just the processes and the protocols between them, see
+[`docs/processes.png`](docs/processes.png) ([source](docs/processes.svg)).
+
 | Object | Role | Restate primitives on show |
 |---|---|---|
 | [`Conversation[sessionId]`](src/restate/conversation.ts) | The prompt queue, with no queue code: each prompt is a one-way send, and Restate runs one invocation per key at a time, in order. Runs one turn and waits for it to finish. Re-drives the turn if the VM dies. | per-key serialization, awakeables, timeouts |

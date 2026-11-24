@@ -1,0 +1,160 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="960" viewBox="0 0 1600 960" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4a5163"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2b8a3e"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2255c"/></marker>
+    <style>
+      .p { fill: #fff; stroke: #c9ced8; stroke-width: 1.6; }
+      .name { font-size: 18px; font-weight: 700; fill: #1d2330; }
+      .port { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; fill: #5c6477; }
+      .sub { font-size: 13px; fill: #5c6477; }
+      .proto { font-size: 13px; font-weight: 600; fill: #3b4252; }
+      .detail { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; fill: #5c6477; }
+      .flow { stroke: #4a5163; stroke-width: 2; fill: none; marker-end: url(#a); }
+      .both { stroke: #4a5163; stroke-width: 2; fill: none; marker-end: url(#a); marker-start: url(#a); }
+      .sse { stroke: #2b8a3e; stroke-width: 2; fill: none; stroke-dasharray: 7 5; marker-end: url(#g); }
+      .hook { stroke: #c2255c; stroke-width: 2; fill: none; marker-end: url(#r); }
+      .n { font-size: 13px; font-weight: 700; fill: #fff; }
+      .leg { font-size: 14px; fill: #2d3340; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="960" fill="#f6f7f9"/>
+  <text x="40" y="44" style="font-size:22px; font-weight:700; fill:#1d2330">Processes and protocols</text>
+  <text x="40" y="68" class="sub">One prompt to a dormant session, numbered in order. Every process also sends log lines to the proxy (HTTP).</text>
+
+  <g transform="translate(0,40)">
+  <!-- ============ processes ============ -->
+  <rect x="40" y="320" width="200" height="110" rx="12" class="p"/>
+  <text x="60" y="352" class="name">Browser</text>
+  <text x="60" y="376" class="sub">demo page</text>
+
+  <rect x="330" y="310" width="230" height="130" rx="12" class="p" stroke="#495057"/>
+  <text x="350" y="342" class="name">Session proxy</text>
+  <text x="350" y="364" class="port">node · :3000</text>
+  <text x="350" y="388" class="sub">product API, SSE relay,</text>
+  <text x="350" y="406" class="sub">event intake</text>
+
+  <rect x="680" y="110" width="260" height="110" rx="12" class="p" stroke="#3b5bdb" stroke-width="2.2"/>
+  <text x="700" y="142" class="name">restate-server</text>
+  <text x="700" y="164" class="port">:8080 ingress · :9070 admin</text>
+  <text x="700" y="188" class="sub">journal, queues, timers</text>
+
+  <rect x="680" y="320" width="260" height="120" rx="12" class="p" stroke="#3b5bdb" stroke-width="2.2"/>
+  <text x="700" y="352" class="name">Restate services</text>
+  <text x="700" y="374" class="port">node · :9080</text>
+  <text x="700" y="398" class="sub">Conversation · Session</text>
+  <text x="700" y="416" class="sub">Sandbox · Disk</text>
+
+  <rect x="1070" y="110" width="250" height="110" rx="12" class="p"/>
+  <text x="1090" y="142" class="name">Sandbox service</text>
+  <text x="1090" y="164" class="port">node · :3001 · SQLite</text>
+  <text x="1090" y="188" class="sub">creates and destroys VMs</text>
+
+  <rect x="1070" y="320" width="250" height="120" rx="12" class="p" stroke="#2b8a3e" stroke-width="2.2"/>
+  <text x="1090" y="352" class="name">Agent (one per VM)</text>
+  <text x="1090" y="374" class="port">node child · :4000+</text>
+  <text x="1090" y="398" class="sub">runs turns, streams them,</text>
+  <text x="1090" y="416" class="sub">reports turn.ended</text>
+
+  <rect x="1070" y="560" width="250" height="110" rx="12" class="p"/>
+  <text x="1090" y="592" class="name">Disk service</text>
+  <text x="1090" y="614" class="port">node · :3002 · SQLite</text>
+  <text x="1090" y="638" class="sub">disks and exclusive mounts</text>
+
+  <path d="M1400,340 h140 a10,6 0 0 1 0,12 v66 a70,10 0 0 1 -140,0 v-66 a10,6 0 0 1 0,-12 z" fill="#e3fafc" stroke="#66d9e8" stroke-width="1.6"/>
+  <ellipse cx="1470" cy="346" rx="70" ry="10" fill="#e3fafc" stroke="#66d9e8" stroke-width="1.6"/>
+  <text x="1418" y="384" class="name" style="font-size:16px">Disk files</text>
+  <text x="1418" y="404" class="detail">data/disks/&lt;id&gt;/</text>
+
+  <!-- ============ arrows ============ -->
+  <!-- 1 browser → proxy -->
+  <path d="M240,355 L328,355" class="flow"/>
+  <text x="250" y="344" class="proto">HTTP</text>
+  <circle cx="284" cy="378" r="12" fill="#3b5bdb"/><text x="280" y="382.5" class="n">1</text>
+
+  <!-- 7 proxy → browser SSE -->
+  <path d="M328,412 L242,412" class="sse"/>
+  <text x="252" y="433" class="proto" fill="#2b8a3e">SSE</text>
+  <circle cx="300" cy="429" r="12" fill="#2b8a3e"/><text x="296" y="433.5" class="n">7</text>
+
+  <!-- 2, 9 proxy → restate-server ingress -->
+  <path d="M560,330 C620,330 620,165 678,165" class="flow"/>
+  <text x="488" y="196" class="proto">HTTP ingress</text>
+  <text x="488" y="213" class="detail">idempotency key</text>
+  <circle cx="628" cy="208" r="12" fill="#3b5bdb"/><text x="624" y="212.5" class="n">2</text>
+  <circle cx="628" cy="288" r="12" fill="#c2255c"/><text x="624" y="292.5" class="n">9</text>
+
+  <!-- 3 restate-server ↔ services -->
+  <path d="M810,222 L810,318" class="both"/>
+  <text x="824" y="262" class="proto">HTTP/2</text>
+  <text x="824" y="280" class="detail">Restate protocol</text>
+  <circle cx="788" cy="270" r="12" fill="#3b5bdb"/><text x="784" y="274.5" class="n">3</text>
+
+  <!-- 4 services → sandbox service -->
+  <path d="M940,330 L1068,190" class="flow"/>
+  <text x="1022" y="286" class="proto">HTTP</text>
+  <text x="1022" y="303" class="detail">POST /sandboxes</text>
+  <circle cx="1004" cy="260" r="12" fill="#3b5bdb"/><text x="1000" y="264.5" class="n">4</text>
+
+  <!-- 5 sandbox service → agent -->
+  <path d="M1195,222 L1195,318" class="flow"/>
+  <text x="1209" y="262" class="proto">spawn, signals</text>
+  <text x="1209" y="279" class="detail">+ HTTP GET /health</text>
+  <circle cx="1173" cy="270" r="12" fill="#3b5bdb"/><text x="1169" y="274.5" class="n">5</text>
+
+  <!-- agent → disk service: mount -->
+  <path d="M1195,442 L1195,558" class="flow"/>
+  <text x="1209" y="495" class="proto">HTTP</text>
+  <text x="1209" y="512" class="detail">mount · unmount</text>
+
+  <!-- agent → disk files -->
+  <path d="M1320,385 L1398,385" class="flow"/>
+  <text x="1330" y="375" class="proto">files</text>
+
+  <!-- 6 services → agent -->
+  <path d="M940,385 L1068,385" class="flow"/>
+  <text x="948" y="375" class="proto">HTTP</text>
+  <text x="948" y="405" class="detail">POST /api/prompt</text>
+  <circle cx="1004" cy="385" r="12" fill="#3b5bdb"/><text x="1000" y="389.5" class="n">6</text>
+
+  <!-- services → disk service -->
+  <path d="M940,435 L1068,610" class="flow"/>
+  <text x="1012" y="500" class="proto">HTTP</text>
+  <text x="1012" y="517" class="detail">POST · DELETE /disks</text>
+
+  <!-- 7 agent → proxy SSE (over the top) -->
+  <path d="M1320,335 L1350,335 L1350,98 L470,98 L470,308" class="sse"/>
+  <text x="1020" y="92" class="proto" fill="#2b8a3e">SSE  GET /api/events</text>
+
+  <!-- 8 agent / sandbox service → proxy webhooks -->
+  <path d="M1320,350 L1370,350 L1370,82 L420,82 L420,308" class="hook"/>
+  <path d="M1195,110 L1195,82" stroke="#c2255c" stroke-width="2" fill="none"/>
+  <text x="560" y="76" class="proto" fill="#c2255c">HTTP webhooks  POST /internal/events</text>
+  <circle cx="1370" cy="215" r="12" fill="#c2255c"/><text x="1366" y="219.5" class="n">8</text>
+
+  <!-- ============ sequence ============ -->
+  <rect x="40" y="560" width="990" height="325" rx="12" class="p"/>
+  <text x="62" y="592" class="name">Sequence</text>
+  <g>
+    <circle cx="74" cy="620" r="12" fill="#3b5bdb"/><text x="70" y="624.5" class="n">1</text>
+    <text x="96" y="625" class="leg">Browser → proxy: <tspan class="detail" style="font-size:13px">POST /api/sessions/:id/prompts</tspan></text>
+    <circle cx="74" cy="650" r="12" fill="#3b5bdb"/><text x="70" y="654.5" class="n">2</text>
+    <text x="96" y="655" class="leg">Proxy → restate-server: one-way send to <tspan class="detail" style="font-size:13px">Conversation/&lt;session&gt;/deliver</tspan>; it waits in that session's queue</text>
+    <circle cx="74" cy="680" r="12" fill="#3b5bdb"/><text x="70" y="684.5" class="n">3</text>
+    <text x="96" y="685" class="leg">restate-server → services: runs Conversation → Session → Disk, Sandbox (every step journaled)</text>
+    <circle cx="74" cy="710" r="12" fill="#3b5bdb"/><text x="70" y="714.5" class="n">4</text>
+    <text x="96" y="715" class="leg">Services → sandbox service: create a VM (only if none is running)</text>
+    <circle cx="74" cy="740" r="12" fill="#3b5bdb"/><text x="70" y="744.5" class="n">5</text>
+    <text x="96" y="745" class="leg">Sandbox service spawns the agent; the agent mounts its disk and reads the transcript</text>
+    <circle cx="74" cy="770" r="12" fill="#3b5bdb"/><text x="70" y="774.5" class="n">6</text>
+    <text x="96" y="775" class="leg">Services → agent: the prompt</text>
+    <circle cx="74" cy="800" r="12" fill="#2b8a3e"/><text x="70" y="804.5" class="n">7</text>
+    <text x="96" y="805" class="leg">Agent → proxy → browser: the turn streams over SSE (never through Restate)</text>
+    <circle cx="74" cy="830" r="12" fill="#c2255c"/><text x="70" y="834.5" class="n">8</text>
+    <text x="96" y="835" class="leg">Agent → proxy: <tspan class="detail" style="font-size:13px">turn.ended</tspan></text>
+    <circle cx="74" cy="860" r="12" fill="#c2255c"/><text x="70" y="864.5" class="n">9</text>
+    <text x="96" y="865" class="leg">Proxy → restate-server: <tspan class="detail" style="font-size:13px">Session/onEvent</tspan> ends the turn; the next prompt runs</text>
+  </g>
+  </g>
+</svg>
