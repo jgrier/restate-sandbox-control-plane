@@ -5,7 +5,7 @@
 
 import * as restate from "@restatedev/restate-sdk";
 import { disks } from "../clients/disks.js";
-import { retry } from "./common.js";
+import { retry, statusRead } from "./common.js";
 
 type DiskState = {
   status: "ready" | "deleted";
@@ -49,7 +49,7 @@ export const Disk = restate.object({
       ctx.console.info("disk deleted");
     },
 
-    getStatus: restate.handlers.object.shared(async (ctx: restate.ObjectSharedContext<DiskState>) => ({
+    getStatus: restate.handlers.object.shared(statusRead, async (ctx: restate.ObjectSharedContext<DiskState>) => ({
       status: (await ctx.get("status")) ?? "unknown",
       assignedSandboxId: await ctx.get("assignedSandboxId"),
     })),

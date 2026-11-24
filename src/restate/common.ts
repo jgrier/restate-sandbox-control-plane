@@ -6,6 +6,13 @@ import { emitLog } from "../lib/log.js";
 export const retry = { maxRetryDuration: timeouts.stepRetry };
 
 /**
+ * Options for getStatus handlers: read-only and polled constantly by the demo page, so Restate
+ * keeps nothing once they finish. Both are needed: journalRetention drops the journal, and
+ * idempotencyRetention drops the completed-invocation record that the Restate UI lists.
+ */
+export const statusRead = { journalRetention: 0, idempotencyRetention: 0 };
+
+/**
  * Handlers log with `ctx.console`. This transport also forwards those lines to the demo page's
  * control-plane log. Restate suppresses them while replaying a journal, so each line appears once.
  */

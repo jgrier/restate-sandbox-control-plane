@@ -8,7 +8,7 @@ import * as restate from "@restatedev/restate-sdk";
 import { agent } from "../clients/agent.js";
 import { sandboxes, type CreateVm } from "../clients/sandboxes.js";
 import { timeouts } from "../config.js";
-import { retry } from "./common.js";
+import { retry, statusRead } from "./common.js";
 
 type SandboxState = {
   status: "starting" | "running" | "destroyed";
@@ -70,7 +70,7 @@ export const Sandbox = restate.object({
       await destroyVm(ctx, "idle");
     },
 
-    getStatus: restate.handlers.object.shared(async (ctx: restate.ObjectSharedContext<SandboxState>) => ({
+    getStatus: restate.handlers.object.shared(statusRead, async (ctx: restate.ObjectSharedContext<SandboxState>) => ({
       status: (await ctx.get("status")) ?? "unknown",
       diskId: await ctx.get("diskId"),
       agentUrl: await ctx.get("agentUrl"),

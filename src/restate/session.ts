@@ -8,7 +8,7 @@
 import * as restate from "@restatedev/restate-sdk";
 import { agent, type Prompt } from "../clients/agent.js";
 import { startCallTimeout, timeouts } from "../config.js";
-import { retry } from "./common.js";
+import { retry, statusRead } from "./common.js";
 import { Disk } from "./disk.js";
 import { Sandbox } from "./sandbox.js";
 
@@ -129,7 +129,7 @@ export const Session = restate.object({
       ctx.console.info("session deleted");
     },
 
-    getStatus: restate.handlers.object.shared(async (ctx: restate.ObjectSharedContext<SessionState>) => ({
+    getStatus: restate.handlers.object.shared(statusRead, async (ctx: restate.ObjectSharedContext<SessionState>) => ({
       status: (await ctx.get("status")) ?? "unknown",
       ownerId: await ctx.get("ownerId"),
       diskId: await ctx.get("diskId"),
