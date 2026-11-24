@@ -21,7 +21,6 @@ type SessionState = {
   sandboxId: string; // the current or most recent sandbox
   generation: number; // bumped by stop and delete, so prompts sent earlier are rejected
   currentTurn: Turn;
-  seenEvents: string[];
 };
 
 type Ctx = restate.ObjectContext<SessionState>;
@@ -84,15 +83,16 @@ export const Session = restate.object({
       return reply;
     },
 
-    /** Every lifecycle event from agents and the sandbox service lands here. */
+    /**
+     * Every lifecycle event from agents and the sandbox service lands here. Replays are safe
+     * without remembering past events: the proxy sends each one with an idempotency key, and an
+     * event only acts if it matches the current state (the turn in flight, a live sandbox).
+     */
     onEvent: async (ctx: Ctx, event: LifecycleEvent) => {
-      const seen = (await ctx.get("seenEvents")) ?? [];
-      if (seen.includes(event.eventId)) return; // a replayed event
-      ctx.set("seenEvents", [...seen, event.eventId].slice(-100));
-
       const turn = await ctx.get("currentTurn");
       if (event.type === "turn.ended") {
-        if (turn?.messageId !== event.messageId) return;
+        // Must be this turn, on this sandbox: a recovered turn keeps its messageId but runs on a new VM.
+        if (turn?.messageId !== event.messageId || turn.sandboxId !== event.sandboxId) return;
         endTurn(ctx, turn, { status: "completed" });
         ctx.objectSendClient(Sandbox, event.sandboxId).touch();
         ctx.console.info(`turn ${event.messageId} ended`);

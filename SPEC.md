@@ -122,14 +122,14 @@ durably.
 
 State: `status` (`active` | `deleted`), `ownerId`, `diskId`, `sandboxId` (current or last, may
 be null), `generation` (incremented on every stop and delete), `currentTurn` (`{messageId,
-turnToken, sandboxId}` or null), recent event ids, `createdAt`.
+turnToken, sandboxId}` or null). No lists or history: only what is true now.
 
 | Handler | Kind | Behavior |
 |---|---|---|
 | `create({ownerId})` | exclusive | Idempotent: if the session exists, return it. Otherwise `Disk[disk-<sessionId>].create` and set `active`. The proxy then sends the first prompt like any other, so `Session` never calls `Conversation` and dependencies stay one-way. |
 | `resume({generation?})` | exclusive | Get or create a live sandbox. Rejects if `deleted`, or if `generation` is out of date (the session was stopped after the prompt was sent). If `Sandbox[sandboxId].getStatus` is `running`, return `{sandboxId, agentUrl}`. Otherwise: new sandbox id → `Disk.assign` (mount token, `forceMount`) → `Sandbox[new].start(...)` → store and return the address. The proxy calls this to find the agent for SSE. |
 | `deliverPrompt({messageId, text, attachmentRefs, turnToken, generation})` | exclusive | The `resume` logic, then POST the prompt to the agent. Agent replies: **admitted** → `currentTurn = {messageId, turnToken, sandboxId}`, `Sandbox.touch()`, return `admitted`. **already-completed** → return it. **Unreachable** (dead or hung) → `Sandbox.stop("unreachable")`, so the VM is really gone, then return `gone`. **Rejected** (stopped or deleted) → return `rejected`. Never waits for the turn. |
-| `onEvent({eventId, type, sandboxId, messageId?, reason?})` | exclusive | Every lifecycle event (§8), deduplicated by `eventId`. **`turn.ended`** for `currentTurn`: complete `turnToken` with `completed`, clear `currentTurn`, `Sandbox.touch()`. **`sandbox.stopped`**: `Sandbox.markDestroyed(reason)`. If `currentTurn` was on that sandbox, complete its token with `aborted` and the reason. Events about an older sandbox only update that sandbox's twin. |
+| `onEvent({eventId, type, sandboxId, messageId?, reason?})` | exclusive | Every lifecycle event (§8). **`turn.ended`** matching `currentTurn` (same message *and* sandbox): complete `turnToken` with `completed`, clear `currentTurn`, `Sandbox.touch()`. **`sandbox.stopped`**: `Sandbox.markDestroyed(reason)`. If `currentTurn` was on that sandbox, complete its token with `aborted` and the reason. Events about an older sandbox only update that sandbox's twin. |
 | `stop()` | exclusive | `generation++`. If a turn is in flight, complete its token with `aborted "stopped"`. `Sandbox.stop()`, then `Disk.release({sandboxId})`. |
 | `discardSandbox({reason})` | exclusive | Like `stop` but without bumping the generation: throw the current sandbox away (a stuck agent) and let queued prompts carry on with a fresh one. |
 | `delete()` | exclusive | `stop()` as above, then `Disk.delete()`, then `deleted`. A deleted session rejects every call, and its id is never reused. |
@@ -351,7 +351,8 @@ Restate.
 
 The sandbox service (`sandbox.stopped`) and the agents (`turn.ended`) send `POST proxy
 /internal/events`. The proxy sends each event to `Session[sessionId].onEvent` with idempotency
-key `event:<eventId>`. `Session` also remembers recent event ids, so a replay has no effect.
+key `event:<eventId>`, so Restate drops duplicates. Past that, a replay is still harmless: an
+event only acts if it matches current state (the turn in flight, a sandbox not yet destroyed).
 `Session` then updates the `Sandbox` twin and the turn in flight. `Sandbox` itself never
 receives events.
 
@@ -362,7 +363,7 @@ receives events.
 | Create a VM | sandbox service client token = the `Sandbox` key |
 | Create a disk | disk service client token = the `Disk` key |
 | Deliver a prompt | Restate idempotency key `prompt:<sid>:<messageId>`; the agent also deduplicates on `messageId` using the transcript |
-| Lifecycle events | Restate idempotency key `event:<eventId>`; `Session` also keeps recent event ids |
+| Lifecycle events | Restate idempotency key `event:<eventId>`; `onEvent` only acts on events matching current state |
 | Destroy, delete, unmount, release, markDestroyed, cancel a timer | naturally idempotent |
 | Create a session | Restate idempotency key `create:<sid>`; `Session.create` returns an existing session |
 
