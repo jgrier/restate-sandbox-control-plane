@@ -1,0 +1,21 @@
+{
+  "name": "restate-sandbox-control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An agent-harness control plane on Restate: sessions, sandboxes and disks as virtual objects",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/dev.ts",
+    "reset": "rm -rf data",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@restatedev/restate-sdk": "^1.18.4",
+    "@restatedev/restate-sdk-clients": "^1.18.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.7",
+    "tsx": "^4.23.15",
+    "typescript": "5.9"
+  }
+}

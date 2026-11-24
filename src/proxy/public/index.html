@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Sessions on Restate</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1d2330; --muted: #6b7385; --line: #e3e6ec;
+    --accent: #3b5bdb; --ok: #2b8a3e; --warn: #c77700; --bad: #c92a2a; --chip: #eef1f6;
+    --session: #3b5bdb; --conversation: #7048e8; --sandbox: #d9480f; --disk: #0c8599;
+    --agent: #2b8a3e; --svc: #6b7385;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12141a; --panel: #1b1e26; --ink: #e6e8ee; --muted: #8b93a7; --line: #2a2e39;
+      --accent: #748ffc; --ok: #51cf66; --warn: #fcc419; --bad: #ff6b6b; --chip: #252935;
+      --session: #748ffc; --conversation: #b197fc; --sandbox: #ff922b; --disk: #3bc9db;
+      --agent: #69db7c; --svc: #8b93a7;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; padding: 14px; }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+  .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  section > h2 { margin: 0; padding: 10px 14px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  section > h2 .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .body { padding: 10px 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  tr.dim td { opacity: .45; }
+  tr.selected td { background: var(--chip); }
+  .scroll { overflow-x: auto; }
+  code, .mono { font-family: var(--mono); font-size: 12px; }
+  .chip { display: inline-block; padding: 1px 7px; border-radius: 999px; background: var(--chip); font-size: 12px; white-space: nowrap; }
+  .chip.running, .chip.active, .chip.ready, .chip.completed { color: var(--ok); }
+  .chip.starting, .chip.queued, .chip.waiting { color: var(--warn); }
+  .chip.destroyed, .chip.deleted, .chip.failed, .chip.rejected, .chip.aborted { color: var(--bad); }
+  .mismatch { outline: 2px solid var(--warn); outline-offset: 1px; }
+  .twin { display: flex; flex-direction: column; gap: 2px; }
+  .twin small { color: var(--muted); font-size: 11px; }
+  button { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  .actions { display: flex; gap: 4px; flex-wrap: wrap; }
+  form.row { display: flex; gap: 8px; }
+  input[type=text] { flex: 1; min-width: 0; font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  .empty { color: var(--muted); padding: 10px 0; }
+  /* chat */
+  #chat { display: flex; flex-direction: column; height: 520px; }
+  #messages { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { max-width: 88%; padding: 8px 11px; border-radius: 10px; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: white; }
+  .msg.assistant { align-self: flex-start; background: var(--chip); }
+  .msg .meta { display: block; font-size: 11px; opacity: .75; margin-top: 4px; }
+  .tool { align-self: flex-start; font-family: var(--mono); font-size: 12px; color: var(--muted); padding-left: 6px; border-left: 2px solid var(--line); }
+  .note { align-self: stretch; text-align: center; font-size: 12px; color: var(--muted); }
+  .note.warn { color: var(--warn); }
+  #chat form { padding: 10px 14px; border-top: 1px solid var(--line); }
+  /* log */
+  #log { height: 260px; overflow-y: auto; font-family: var(--mono); font-size: 12px; padding: 8px 14px; }
+  #log div { padding: 1px 0; white-space: pre-wrap; }
+  #log .t { color: var(--muted); }
+  #log .src { font-weight: 600; }
+  #log .warn .msgtext { color: var(--warn); }
+  #log .error .msgtext { color: var(--bad); }
+  .src.Session { color: var(--session); } .src.Conversation { color: var(--conversation); }
+  .src.Sandbox { color: var(--sandbox); } .src.Disk { color: var(--disk); }
+  .src.agent { color: var(--agent); } .src.sandboxes, .src.disks, .src.proxy { color: var(--svc); }
+  dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); width: min(900px, 92vw); max-height: 80vh; padding: 0; }
+  dialog pre { margin: 0; padding: 14px; overflow: auto; max-height: 65vh; font-size: 12px; }
+  dialog header { padding: 10px 14px; }
+  .legend { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agent sessions on Restate</h1>
+  <span class="sub">Session, Conversation, Sandbox and Disk are Restate virtual objects. Sandboxes and disks are twins of the dummy services' real records.</span>
+</header>
+
+<main>
+  <div class="col">
+    <section>
+      <h2>Sessions <span class="hint">queued = prompts waiting in Restate's queue for that session</span></h2>
+      <div class="body">
+        <form class="row" id="new-session">
+          <input type="text" id="first-prompt" placeholder="First prompt for a new session…" value="Hello! What can you do?">
+          <button class="primary">New session</button>
+        </form>
+      </div>
+      <div class="scroll"><table id="sessions"></table></div>
+    </section>
+
+    <section>
+      <h2>Sandboxes <span class="hint">twin (Restate) vs. the sandbox service · outlined = they disagree</span></h2>
+      <div class="scroll"><table id="sandboxes"></table></div>
+    </section>
+
+    <section>
+      <h2>Disks <span class="hint">assigned by Restate vs. actually mounted</span></h2>
+      <div class="scroll"><table id="disks"></table></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section id="chat">
+      <h2><span id="chat-title">Chat</span> <span class="hint" id="chat-status"></span></h2>
+      <div id="messages"><div class="empty">Create a session, or open one with "Chat".</div></div>
+      <form class="row" id="send">
+        <input type="text" id="prompt" placeholder="Send a prompt…" disabled>
+        <button class="primary" id="send-btn" disabled>Send</button>
+        <button type="button" id="send3" disabled title="Send three prompts at once to watch them queue">×3</button>
+      </form>
+    </section>
+
+    <section>
+      <h2>Control-plane log <span class="hint legend">
+        <span class="src Conversation">Conversation</span> · <span class="src Session">Session</span> ·
+        <span class="src Sandbox">Sandbox</span> · <span class="src Disk">Disk</span> ·
+        <span class="src agent">agent</span> · <span class="src sandboxes">services</span></span></h2>
+      <div id="log"></div>
+    </section>
+  </div>
+</main>
+
+<dialog id="transcript">
+  <header><strong id="transcript-title">Transcript</strong> <button onclick="this.closest('dialog').close()" style="float:right">Close</button></header>
+  <pre id="transcript-body"></pre>
+</dialog>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const chip = (s, extra = "") => `<span class="chip ${esc(s)}">${esc(s)}${extra}</span>`;
+const api = async (method, path, body) => {
+  const r = await fetch(path, { method, headers: { "content-type": "application/json" }, body: body && JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || data.message || r.statusText);
+  return data;
+};
+const newId = (p) => `${p}-${Math.random().toString(36).slice(2, 8)}`;
+
+// ------------------------------------------------------------------ world view
+
+let world = { sessions: [], sandboxes: [], disks: [] };
+let selected = null;
+
+async function refresh() {
+  try { world = await api("GET", "/api/world"); render(); } catch {}
+  setTimeout(refresh, 1000);
+}
+
+function render() {
+  const { sessions, sandboxes, disks, idleTimeoutMs, now } = world;
+  $("#sessions").innerHTML = sessions.length ? `
+    <tr><th>Session</th><th>Status</th><th>Sandbox</th><th>Turn in flight</th><th>Queued</th><th>Gen</th><th></th></tr>
+    ${sessions.map((s) => `<tr class="${s.status === "deleted" ? "dim" : ""} ${s.id === selected ? "selected" : ""}">
+      <td><code>${esc(s.id)}</code></td><td>${chip(s.status)}</td>
+      <td><code>${esc(s.sandboxId ?? "—")}</code></td>
+      <td><code>${esc(s.currentTurn ?? "—")}</code></td>
+      <td>${s.queued ? chip("queued", " " + s.queued) : "0"}</td><td>${s.generation ?? ""}</td>
+      <td><div class="actions">${s.status === "active" ? `
+        <button onclick="openChat('${s.id}')">Chat</button>
+        <button onclick="act('POST','/api/sessions/${s.id}/stop')">Stop</button>
+        <button class="danger" onclick="if(confirm('Delete session and disk?'))act('DELETE','/api/sessions/${s.id}')">Delete</button>` : ""}</div></td>
+    </tr>`).join("")}` : `<tr><td class="empty">No sessions yet.</td></tr>`;
+
+  $("#sandboxes").innerHTML = sandboxes.length ? `
+    <tr><th>Sandbox</th><th>Session</th><th>Twin</th><th>Real</th><th>Idle shutdown</th><th>Why destroyed</th><th></th></tr>
+    ${[...sandboxes].reverse().map((v) => {
+      const twin = v.twin?.status ?? "unknown";
+      const real = v.status;
+      const agree = twin === real || (twin === "unknown");
+      const idle = twin === "running" && v.twin?.lastActivityAt
+        ? Math.max(0, Math.round((v.twin.lastActivityAt + idleTimeoutMs - now) / 1000)) + "s" : "—";
+      return `<tr class="${real === "destroyed" && twin === "destroyed" ? "dim" : ""}">
+        <td><code>${esc(v.sandboxID)}</code></td><td><code>${esc(v.labels?.sessionId)}</code></td>
+        <td><span class="${agree ? "" : "mismatch"}">${chip(twin)}</span></td>
+        <td>${chip(real)}${v.pid && real !== "destroyed" ? ` <small class="mono">pid ${v.pid}</small>` : ""}</td>
+        <td>${idle}</td><td>${esc(v.twin?.destroyedReason ?? v.reason ?? "")}</td>
+        <td><div class="actions">${real === "running" ? `
+          <button class="danger" onclick="act('POST','/api/sandboxes/${v.sandboxID}/kill')" title="SIGKILL the VM process">kill -9</button>
+          <button onclick="act('POST','/api/sandboxes/${v.sandboxID}/expire-idle')" title="Make the idle timer fire now">expire idle</button>` : ""}</div></td>
+      </tr>`;
+    }).join("")}` : `<tr><td class="empty">No sandboxes yet.</td></tr>`;
+
+  $("#disks").innerHTML = disks.length ? `
+    <tr><th>Disk</th><th>Session</th><th>Status</th><th>Assigned (twin)</th><th>Mounted (real)</th><th>Size</th><th>Recent events</th><th></th></tr>
+    ${disks.map((d) => `<tr class="${d.status === "deleted" ? "dim" : ""}">
+      <td><code>${esc(d.id)}</code></td><td><code>${esc(d.labels?.sessionId)}</code></td><td>${chip(d.status)}</td>
+      <td><code>${esc(d.twin?.assignedSandboxId ?? "—")}</code></td>
+      <td><code>${esc(d.mountedBy ?? "—")}</code></td>
+      <td>${(d.sizeBytes / 1024).toFixed(1)} KB</td>
+      <td><small>${d.events.slice(0, 3).map((e) => esc(e.kind + (e.detail ? " " + e.detail : ""))).join("<br>")}</small></td>
+      <td>${d.status === "ready" ? `<button onclick="showTranscript('${d.id}')">transcript</button>` : ""}</td>
+    </tr>`).join("")}` : `<tr><td class="empty">No disks yet.</td></tr>`;
+
+  const s = sessions.find((x) => x.id === selected);
+  $("#chat-status").textContent = s ? `${s.status} · sandbox ${s.sandboxId ?? "none"}${s.queued ? ` · ${s.queued} queued` : ""}` : "";
+}
+
+async function act(method, path) {
+  try { await api(method, path); } catch (e) { alert(e.message); }
+}
+
+async function showTranscript(id) {
+  const { content } = await api("GET", `/api/disks/${id}/transcript`);
+  $("#transcript-title").textContent = `${id} / transcript.jsonl`;
+  $("#transcript-body").textContent = content.split("\n").filter(Boolean)
+    .map((l) => JSON.stringify(JSON.parse(l))).join("\n") || "(empty)";
+  $("#transcript").showModal();
+}
+
+// ------------------------------------------------------------------ chat
+
+let events = null;
+const outcomes = {}; // messageId -> outcome label
+
+function openChat(sessionId) {
+  selected = sessionId;
+  $("#chat-title").textContent = `Chat · ${sessionId}`;
+  for (const el of ["#prompt", "#send-btn", "#send3"]) $(el).disabled = false;
+  $("#messages").innerHTML = "";
+  events?.close();
+  events = new EventSource(`/api/sessions/${sessionId}/events`);
+  events.addEventListener("snapshot", (e) => rebuild(JSON.parse(e.data).transcript));
+  events.addEventListener("sandbox", (e) => note(`connected to ${JSON.parse(e.data).sandboxId}`));
+  events.addEventListener("dormant", (e) => {
+    const d = JSON.parse(e.data);
+    note(d.status === "deleted" ? "session deleted" : `no VM running (${d.sandboxId ?? "none yet"}${d.vm ? " " + d.vm : ""}) · transcript read from disk · the next prompt starts a sandbox`);
+  });
+  events.addEventListener("user", (e) => { const d = JSON.parse(e.data); userBubble(d.messageId, d.text); });
+  events.addEventListener("turn.started", (e) => {
+    const d = JSON.parse(e.data);
+    if (d.recovered) note(`recovering turn ${d.messageId} on ${d.sandboxId}`, "warn");
+    assistantBubble(d.messageId).dataset.text = "";
+    paint(d.messageId);
+  });
+  events.addEventListener("assistant.delta", (e) => {
+    const d = JSON.parse(e.data); const b = assistantBubble(d.messageId);
+    b.dataset.text = (b.dataset.text || "") + d.text; paint(d.messageId);
+  });
+  events.addEventListener("tool.started", (e) => { const d = JSON.parse(e.data); tool(`⚙ ${d.name}(…) running`, d.callId); });
+  events.addEventListener("tool.finished", (e) => { const d = JSON.parse(e.data); tool(`⚙ tool result: ${d.result}`, d.callId); });
+  events.addEventListener("system", (e) => note(JSON.parse(e.data).note, "warn"));
+  events.addEventListener("turn.ended", (e) => paint(JSON.parse(e.data).messageId));
+  render();
+}
+
+function rebuild(transcript) {
+  $("#messages").innerHTML = "";
+  for (const e of transcript) {
+    if (e.type === "user") userBubble(e.messageId, e.text);
+    else if (e.type === "assistant") { assistantBubble(e.messageId).dataset.text = e.text; paint(e.messageId); }
+    else if (e.type === "tool_call") tool(`⚙ ${e.name}(…)`, e.callId);
+    else if (e.type === "tool_result") tool(`⚙ tool ${e.error ? "error: " + e.error : "result: " + e.result}`, e.callId);
+    else if (e.type === "system") note(e.note, "warn");
+    else if (e.type === "turn_end" && e.status !== "completed") note(`turn ${e.messageId} ${e.status}`, "warn");
+  }
+  for (const id of Object.keys(outcomes)) paint(id);
+}
+
+function add(el) { $("#messages").appendChild(el); $("#messages").scrollTop = 1e9; return el; }
+function userBubble(id, text) {
+  let b = document.getElementById("u-" + id);
+  if (!b) { b = add(Object.assign(document.createElement("div"), { id: "u-" + id, className: "msg user" })); }
+  b.innerHTML = `${esc(text)}<span class="meta">${esc(id)} ${outcomes[id] ? chip(outcomes[id]) : ""}</span>`;
+  return b;
+}
+function assistantBubble(id) {
+  return document.getElementById("a-" + id) ||
+    add(Object.assign(document.createElement("div"), { id: "a-" + id, className: "msg assistant" }));
+}
+function paint(id) {
+  const a = document.getElementById("a-" + id);
+  if (a) a.textContent = a.dataset.text || "…";
+  const u = document.getElementById("u-" + id);
+  if (u) u.querySelector(".meta").innerHTML = `${esc(id)} ${outcomes[id] ? chip(outcomes[id]) : ""}`;
+}
+function tool(text, callId) { add(Object.assign(document.createElement("div"), { className: "tool", textContent: text })); }
+function note(text, cls = "") { add(Object.assign(document.createElement("div"), { className: "note " + cls, textContent: `— ${text} —` })); }
+
+async function sendPrompt(text) {
+  const messageId = newId("m");
+  outcomes[messageId] = "queued";
+  userBubble(messageId, text);
+  try {
+    const { invocationId } = await api("POST", `/api/sessions/${selected}/prompts`, { messageId, text });
+    trackOutcome(messageId, invocationId);
+  } catch (e) { outcomes[messageId] = "rejected"; paint(messageId); alert(e.message); }
+}
+
+/** Poll the proxy for Conversation.deliver's final result for this prompt. */
+async function trackOutcome(messageId, invocationId) {
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      const r = await api("GET", `/api/prompts/${invocationId}`);
+      if (r.done) { outcomes[messageId] = r.outcome.status + (r.outcome.reason ? `: ${r.outcome.reason}` : ""); paint(messageId); return; }
+    } catch {}
+  }
+}
+
+$("#send").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const text = $("#prompt").value.trim();
+  if (!text || !selected) return;
+  $("#prompt").value = "";
+  sendPrompt(text);
+});
+$("#send3").addEventListener("click", async () => {
+  // One after another, so they queue in a known order. Each POST returns as soon as Restate has it.
+  for (const n of ["first", "second", "third"]) await sendPrompt(`This is my ${n} queued prompt.`);
+});
+
+$("#new-session").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = $("#first-prompt").value.trim() || "Hello!";
+  const messageId = newId("m");
+  try {
+    const r = await api("POST", "/api/sessions", { firstPrompt: { messageId, text } });
+    outcomes[messageId] = "queued";
+    openChat(r.sessionId);
+    userBubble(messageId, text);
+    trackOutcome(messageId, r.invocationId);
+  } catch (err) { alert(err.message); }
+});
+
+// ------------------------------------------------------------------ control-plane log
+
+const logEl = $("#log");
+new EventSource("/api/log").addEventListener("log", (e) => {
+  const l = JSON.parse(e.data);
+  const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
+  const t = new Date(l.at).toLocaleTimeString([], { hour12: false });
+  const row = document.createElement("div");
+  row.className = l.level;
+  row.innerHTML = `<span class="t">${t}</span> <span class="src ${esc(l.source)}">${esc(l.source)}</span>` +
+    `${l.subject ? `<span class="t">[${esc(l.subject)}]</span>` : ""} <span class="msgtext">${esc(l.message)}</span>`;
+  logEl.appendChild(row);
+  while (logEl.children.length > 400) logEl.firstChild.remove();
+  if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+});
+
+refresh();
+</script>
+</body>
+</html>
