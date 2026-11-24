@@ -25,6 +25,8 @@
   header { padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
   header h1 { font-size: 17px; margin: 0; }
   header .sub { color: var(--muted); font-size: 13px; }
+  header a { color: var(--accent); font-size: 13px; text-decoration: none; }
+  header a:hover { text-decoration: underline; }
   main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; padding: 14px; }
   @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
   .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
@@ -86,6 +88,10 @@
 <header>
   <h1>Agent sessions on Restate</h1>
   <span class="sub">Session, Conversation, Sandbox and Disk are Restate virtual objects. Sandboxes and disks are twins of the dummy services' real records.</span>
+  <span style="margin-left:auto; display:flex; gap:14px">
+    <a href="/architecture.png" target="_blank">Architecture</a>
+    <a href="http://localhost:9070" target="_blank">Restate UI</a>
+  </span>
 </header>
 
 <main>

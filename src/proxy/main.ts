@@ -22,6 +22,7 @@ const opts = (extra: { idempotencyKey?: string } = {}): any => clients.rpc.opts(
 const orNull = <T>(p: PromiseLike<T>) => Promise.resolve(p).catch(() => null);
 const log = logger("proxy");
 const page = new URL("./public/index.html", import.meta.url).pathname;
+const diagram = new URL("../../docs/architecture.png", import.meta.url).pathname;
 
 // ------------------------------------------------------------------ control-plane log
 
@@ -149,6 +150,10 @@ const newId = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(
 
 new Router()
   .on("GET", "/", () => fs.readFileSync(page, "utf8"))
+  .on("GET", "/architecture.png", ({ res }) => {
+    res.writeHead(200, { "content-type": "image/png" });
+    res.end(fs.readFileSync(diagram));
+  })
 
   // ---- browser API
   .on("POST", "/api/sessions", async ({ body }) => {

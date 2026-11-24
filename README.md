@@ -11,10 +11,9 @@ that dies mid-turn must not lose the turn.
 That's a lot of distributed-systems machinery: locks, queues, retries, timers, crash recovery.
 Here, Restate provides all of it, and the handlers read like the flow they implement.
 
-```
-Conversation ──▶ Session ──▶ Sandbox      (digital twin of one VM)
-                    └──────▶ Disk         (digital twin of one disk)
-```
+![Architecture: browser and session proxy, four Restate virtual objects, and the dummy sandbox and disk services](docs/architecture.png)
+
+The numbered steps trace one prompt. The source is [`docs/architecture.svg`](docs/architecture.svg).
 
 | Object | Role | Restate primitives on show |
 |---|---|---|
@@ -49,7 +48,8 @@ journal.
 
 ## Things to try
 
-The page shows sessions, sandboxes and disks. Each sandbox and disk row puts Restate's twin
+The page's **Architecture** link opens the diagram above, which is handy to keep beside the
+demo. The page shows sessions, sandboxes and disks. Each sandbox and disk row puts Restate's twin
 next to the dummy service's real record. Below that is a chat panel, and a control-plane log
 of what each object is doing.
 
