@@ -11,6 +11,9 @@
     --session: #3b5bdb; --conversation: #7048e8; --sandbox: #d9480f; --disk: #0c8599;
     --agent: #2b8a3e; --svc: #6b7385;
     --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    --btn-bg: #e5ebff; --btn-border: #aebdfa; --btn-ink: #2c47c0;
+    --warn-bg: #fff0d6; --warn-border: #ffbf5e; --warn-ink: #9c5300;
+    --danger-bg: #ffe3e3; --danger-border: #ffa1a1; --danger-ink: #c92a2a;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -18,6 +21,9 @@
       --accent: #748ffc; --ok: #51cf66; --warn: #fcc419; --bad: #ff6b6b; --chip: #252935;
       --session: #748ffc; --conversation: #b197fc; --sandbox: #ff922b; --disk: #3bc9db;
       --agent: #69db7c; --svc: #8b93a7;
+      --btn-bg: #243056; --btn-border: #3e4f8a; --btn-ink: #b4c2ff;
+      --warn-bg: #3b2d10; --warn-border: #85621f; --warn-ink: #ffd43b;
+      --danger-bg: #3d1c20; --danger-border: #863036; --danger-ink: #ff8f8f;
     }
   }
   * { box-sizing: border-box; }
@@ -49,10 +55,19 @@
   .mismatch { outline: 2px solid var(--warn); outline-offset: 1px; }
   .twin { display: flex; flex-direction: column; gap: 2px; }
   .twin small { color: var(--muted); font-size: 11px; }
-  button { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
-  button:hover { border-color: var(--accent); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: white; }
-  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  button {
+    font: inherit; font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--btn-border); background: var(--btn-bg); color: var(--btn-ink);
+    transition: background .12s, color .12s, border-color .12s, box-shadow .12s;
+  }
+  button:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.18); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+  button.primary:hover:not(:disabled) { filter: brightness(1.12); }
+  button.warn { background: var(--warn-bg); border-color: var(--warn-border); color: var(--warn-ink); }
+  button.warn:hover:not(:disabled) { background: var(--warn); border-color: var(--warn); color: #fff; }
+  button.danger { background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger-ink); }
+  button.danger:hover:not(:disabled) { background: var(--bad); border-color: var(--bad); color: #fff; }
   .actions { display: flex; gap: 4px; flex-wrap: wrap; }
   form.row { display: flex; gap: 8px; }
   input[type=text] { flex: 1; min-width: 0; font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
@@ -178,7 +193,7 @@ function render() {
       <td>${s.queued ? chip("queued", " " + s.queued) : "0"}</td><td>${s.generation ?? ""}</td>
       <td><div class="actions">${s.status === "active" ? `
         <button onclick="openChat('${s.id}')">Chat</button>
-        <button onclick="act('POST','/api/sessions/${s.id}/stop')">Stop</button>
+        <button class="warn" onclick="act('POST','/api/sessions/${s.id}/stop')">Stop</button>
         <button class="danger" onclick="if(confirm('Delete session and disk?'))act('DELETE','/api/sessions/${s.id}')">Delete</button>` : ""}</div></td>
     </tr>`).join("")}` : `<tr><td class="empty">No sessions yet.</td></tr>`;
 
@@ -197,7 +212,7 @@ function render() {
         <td>${idle}</td><td>${esc(v.twin?.destroyedReason ?? v.reason ?? "")}</td>
         <td><div class="actions">${real === "running" ? `
           <button class="danger" onclick="act('POST','/api/sandboxes/${v.sandboxID}/kill')" title="SIGKILL the VM process">kill -9</button>
-          <button onclick="act('POST','/api/sandboxes/${v.sandboxID}/expire-idle')" title="Make the idle timer fire now">expire idle</button>` : ""}</div></td>
+          <button class="warn" onclick="act('POST','/api/sandboxes/${v.sandboxID}/expire-idle')" title="Make the idle timer fire now">expire idle</button>` : ""}</div></td>
       </tr>`;
     }).join("")}` : `<tr><td class="empty">No sandboxes yet.</td></tr>`;
 
