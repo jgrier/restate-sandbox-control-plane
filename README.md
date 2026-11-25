@@ -32,8 +32,6 @@ The rest of the repo plays the outside world, so you can run the whole thing on 
 - **[Fake agent-server](src/services/agent/main.ts)**: an echo "model" with a simulated tool call. It keeps an append-only transcript on the disk, and repairs and resumes a turn its predecessor didn't finish.
 - **[Session proxy](src/proxy/main.ts)**: the product API. It's the only thing that talks to Restate, and it serves a demo page.
 
-The full design is in [SPEC.md](SPEC.md).
-
 ## Run it
 
 You need Node 22+ and `restate-server` (`brew install restatedev/tap/restate-server`, or see the
