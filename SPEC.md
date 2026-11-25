@@ -385,7 +385,7 @@ The proxy is the only thing that calls Restate's ingress.
 **Demo**
 | Endpoint | Does |
 |---|---|
-| `GET /api/world` | One snapshot, plus each session's queued prompt count (Conversation invocations waiting in Restate's inbox, read from the admin SQL API: a demo-only peek). **Disks** from the disk service joined with `Disk.getStatus`. **Sandboxes** from the sandbox service joined with `Sandbox.getStatus`. **Sessions** from each disk's `sessionId` label joined with `Session.getStatus`. Each row shows the twin and the real-world record side by side, with disagreements flagged |
+| `GET /api/world` | One snapshot. **Disks** from the disk service joined with `Disk.getStatus`. **Sandboxes** from the sandbox service joined with `Sandbox.getStatus`. **Sessions** from each disk's `sessionId` label joined with `Session.getStatus`. Each row shows the twin and the real-world record side by side, with disagreements flagged |
 | `POST /api/sandboxes/:id/kill` | sandbox service kill |
 | `POST /api/sandboxes/:id/expire-idle` | `Sandbox.expireIdleNow` |
 | `GET /api/disks/:id/transcript` | disk service file read |

@@ -113,7 +113,7 @@
 <main>
   <div class="col">
     <section>
-      <h2>Sessions <span class="hint">queued = prompts waiting in Restate's queue for that session</span></h2>
+      <h2>Sessions <span class="hint">each prompt's badge in the chat shows queued → completed</span></h2>
       <div class="body">
         <form class="row" id="new-session">
           <input type="text" id="first-prompt" placeholder="First prompt for a new session…" value="Hello! What can you do?">
@@ -185,12 +185,12 @@ async function refresh() {
 function render() {
   const { sessions, sandboxes, disks, idleTimeoutMs, now } = world;
   $("#sessions").innerHTML = sessions.length ? `
-    <tr><th>Session</th><th>Status</th><th>Sandbox</th><th>Turn in flight</th><th>Queued</th><th>Gen</th><th></th></tr>
+    <tr><th>Session</th><th>Status</th><th>Sandbox</th><th>Turn in flight</th><th>Gen</th><th></th></tr>
     ${sessions.map((s) => `<tr class="${s.status === "deleted" ? "dim" : ""} ${s.id === selected ? "selected" : ""}">
       <td><code>${esc(s.id)}</code></td><td>${chip(s.status)}</td>
       <td><code>${esc(s.sandboxId ?? "—")}</code></td>
       <td><code>${esc(s.currentTurn ?? "—")}</code></td>
-      <td>${s.queued ? chip("queued", " " + s.queued) : "0"}</td><td>${s.generation ?? ""}</td>
+      <td>${s.generation ?? ""}</td>
       <td><div class="actions">${s.status === "active" ? `
         <button onclick="openChat('${s.id}')">Chat</button>
         <button class="warn" onclick="act('POST','/api/sessions/${s.id}/stop')">Stop</button>
@@ -228,7 +228,7 @@ function render() {
     </tr>`).join("")}` : `<tr><td class="empty">No disks yet.</td></tr>`;
 
   const s = sessions.find((x) => x.id === selected);
-  $("#chat-status").textContent = s ? `${s.status} · sandbox ${s.sandboxId ?? "none"}${s.queued ? ` · ${s.queued} queued` : ""}` : "";
+  $("#chat-status").textContent = s ? `${s.status} · sandbox ${s.sandboxId ?? "none"}` : "";
 }
 
 async function act(method, path) {

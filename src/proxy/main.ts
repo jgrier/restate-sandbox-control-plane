@@ -48,24 +48,6 @@ async function sendPrompt(sessionId: string, prompt: { messageId: string; text: 
   return withStatus(202, { sessionId, messageId: prompt.messageId, invocationId: handle.invocationId });
 }
 
-/** Queued prompts per session: the Conversation invocations waiting in Restate's queue. */
-async function queuedPrompts(): Promise<Record<string, number>> {
-  try {
-    const res = await fetch(`${urls.restateAdmin}/query`, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({
-        query: "select service_key, count(*) as n from sys_inbox where service_name = 'Conversation' group by service_key",
-      }),
-      signal: AbortSignal.timeout(timeouts.proxy),
-    });
-    const { rows } = (await res.json()) as { rows?: { service_key: string; n: number }[] };
-    return Object.fromEntries((rows ?? []).map((row) => [row.service_key, Number(row.n)]));
-  } catch {
-    return {};
-  }
-}
-
 // ------------------------------------------------------------------ SSE: follow the session's agent
 
 async function streamSession(sessionId: string, res: any, raw: any) {
@@ -120,10 +102,9 @@ async function pipeAgentEvents(agentUrl: string, res: any, signal: AbortSignal) 
 // ------------------------------------------------------------------ world view (demo)
 
 async function world() {
-  const [diskList, vmList, queued] = await Promise.all([
+  const [diskList, vmList] = await Promise.all([
     request("GET", `${urls.disks}/disks`),
     request("GET", `${urls.sandboxes}/sandboxes`),
-    queuedPrompts(),
   ]);
   const twin = orNull;
 
@@ -138,7 +119,6 @@ async function world() {
     sessionIds.map(async (id) => ({
       id,
       ...(await twin(restate.objectClient(Session, id).getStatus(opts()))),
-      queued: queued[id] ?? 0,
     })),
   );
   return { sessions, sandboxes, disks, idleTimeoutMs: timeouts.idle, now: Date.now() };

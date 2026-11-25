@@ -57,7 +57,7 @@ next to the dummy service's real record. Below that is a chat panel, and a contr
 of what each object is doing.
 
 1. **New session.** Watch the log: Session creates its Disk, starts a Sandbox, and the agent mounts the disk and takes the first turn.
-2. **Send ×3** while a turn runs. The extra prompts show as *queued*: they're waiting in Restate's own queue for `Conversation[session]`, and run one after another.
+2. **Send ×3** while a turn runs. Each prompt's badge shows *queued* while it waits in Restate's own queue for `Conversation[session]`; they run one after another and turn *completed*.
 3. **kill -9** a sandbox mid-turn. The turn ends as *aborted: vm died* and the queue moves on: the next prompt gets a fresh VM on the same disk, and the agent marks the unfinished turn as interrupted in the transcript.
 4. **Wait 30 s**, or click **expire idle**. The VM gets its shutdown hook and is destroyed. Send another prompt: a new VM boots on the same disk, and the agent carries on the conversation.
 5. **Stop** with prompts queued. It returns at once. The turn in flight is aborted, and the queued prompts are rejected.
