@@ -186,12 +186,18 @@ async function refresh() {
 }
 
 function render() {
-  const { idleTimeoutMs, now } = world;
   // "Hide deleted": drop deleted sessions and disks, and sandboxes that are destroyed.
   const hide = $("#hide-deleted").checked;
   const sessions = hide ? world.sessions.filter((s) => s.status !== "deleted") : world.sessions;
   const sandboxes = hide ? world.sandboxes.filter((v) => v.status !== "destroyed") : world.sandboxes;
   const disks = hide ? world.disks.filter((d) => d.status !== "deleted") : world.disks;
+  renderSessions(sessions);
+  renderSandboxes(sandboxes);
+  renderDisks(disks);
+  renderChatHeader(sessions);
+}
+
+function renderSessions(sessions) {
   $("#sessions").innerHTML = sessions.length ? `
     <tr><th>Session</th><th>Status</th><th>Sandbox</th><th>Turn in flight</th><th>Gen</th><th></th></tr>
     ${sessions.map((s) => `<tr class="${s.status === "deleted" ? "dim" : ""} ${s.id === selected ? "selected" : ""}">
@@ -204,7 +210,10 @@ function render() {
         <button class="warn" onclick="act('POST','/api/sessions/${s.id}/stop')">Stop</button>
         <button class="danger" onclick="if(confirm('Delete session and disk?'))act('DELETE','/api/sessions/${s.id}')">Delete</button>` : ""}</div></td>
     </tr>`).join("")}` : `<tr><td class="empty">No sessions yet.</td></tr>`;
+}
 
+function renderSandboxes(sandboxes) {
+  const { idleTimeoutMs, now } = world;
   $("#sandboxes").innerHTML = sandboxes.length ? `
     <tr><th>Sandbox</th><th>Session</th><th>Twin</th><th>Real</th><th>Idle shutdown</th><th>Why destroyed</th><th></th></tr>
     ${[...sandboxes].reverse().map((v) => {
@@ -223,7 +232,9 @@ function render() {
           <button class="warn" onclick="act('POST','/api/sandboxes/${v.sandboxID}/expire-idle')" title="Make the idle timer fire now">expire idle</button>` : ""}</div></td>
       </tr>`;
     }).join("")}` : `<tr><td class="empty">No sandboxes yet.</td></tr>`;
+}
 
+function renderDisks(disks) {
   $("#disks").innerHTML = disks.length ? `
     <tr><th>Disk</th><th>Session</th><th>Status</th><th>Assigned (twin)</th><th>Mounted (real)</th><th>Size</th><th>Recent events</th><th></th></tr>
     ${disks.map((d) => `<tr class="${d.status === "deleted" ? "dim" : ""}">
@@ -234,7 +245,9 @@ function render() {
       <td><small>${d.events.slice(0, 3).map((e) => esc(e.kind + (e.detail ? " " + e.detail : ""))).join("<br>")}</small></td>
       <td>${d.status === "ready" ? `<button onclick="showTranscript('${d.id}')">transcript</button>` : ""}</td>
     </tr>`).join("")}` : `<tr><td class="empty">No disks yet.</td></tr>`;
+}
 
+function renderChatHeader(sessions) {
   const s = sessions.find((x) => x.id === selected);
   $("#chat-status").textContent = s ? `${s.status} · sandbox ${s.sandboxId ?? "none"}` : "";
 }
@@ -263,29 +276,35 @@ function openChat(sessionId) {
   $("#messages").innerHTML = "";
   events?.close();
   events = new EventSource(`/api/sessions/${sessionId}/events`);
-  events.addEventListener("snapshot", (e) => rebuild(JSON.parse(e.data).transcript));
-  events.addEventListener("sandbox", (e) => note(`connected to ${JSON.parse(e.data).sandboxId}`));
-  events.addEventListener("dormant", (e) => {
-    const d = JSON.parse(e.data);
-    note(d.status === "deleted" ? "session deleted" : `no VM running (${d.sandboxId ?? "none yet"}${d.vm ? " " + d.vm : ""}) · transcript read from disk · the next prompt starts a sandbox`);
-  });
-  events.addEventListener("user", (e) => { const d = JSON.parse(e.data); userBubble(d.messageId, d.text); });
-  events.addEventListener("turn.started", (e) => {
-    const d = JSON.parse(e.data);
+  for (const [type, handle] of Object.entries(chatEventHandlers)) {
+    events.addEventListener(type, (e) => handle(JSON.parse(e.data)));
+  }
+  render();
+}
+
+// One function per event type on the session's stream.
+const chatEventHandlers = {
+  snapshot: (d) => rebuild(d.transcript),
+  sandbox: (d) => note(`connected to ${d.sandboxId}`),
+  dormant: (d) => note(d.status === "deleted"
+    ? "session deleted"
+    : `no VM running (${d.sandboxId ?? "none yet"}) · transcript read from disk · the next prompt starts a sandbox`),
+  user: (d) => userBubble(d.messageId, d.text),
+  "turn.started": (d) => {
     if (d.recovered) note(`recovering turn ${d.messageId} on ${d.sandboxId}`, "warn");
     assistantBubble(d.messageId).dataset.text = "";
     paint(d.messageId);
-  });
-  events.addEventListener("assistant.delta", (e) => {
-    const d = JSON.parse(e.data); const b = assistantBubble(d.messageId);
-    b.dataset.text = (b.dataset.text || "") + d.text; paint(d.messageId);
-  });
-  events.addEventListener("tool.started", (e) => { const d = JSON.parse(e.data); tool(`⚙ ${d.name}(…) running`, d.callId); });
-  events.addEventListener("tool.finished", (e) => { const d = JSON.parse(e.data); tool(`⚙ tool result: ${d.result}`, d.callId); });
-  events.addEventListener("system", (e) => note(JSON.parse(e.data).note, "warn"));
-  events.addEventListener("turn.ended", (e) => paint(JSON.parse(e.data).messageId));
-  render();
-}
+  },
+  "assistant.delta": (d) => {
+    const bubble = assistantBubble(d.messageId);
+    bubble.dataset.text = (bubble.dataset.text || "") + d.text;
+    paint(d.messageId);
+  },
+  "tool.started": (d) => tool(`⚙ ${d.name}(…) running`, d.callId),
+  "tool.finished": (d) => tool(`⚙ tool result: ${d.result}`, d.callId),
+  system: (d) => note(d.note, "warn"),
+  "turn.ended": (d) => paint(d.messageId),
+};
 
 function rebuild(transcript) {
   $("#messages").innerHTML = "";

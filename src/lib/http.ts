@@ -80,16 +80,19 @@ type Handler = (req: Req) => unknown | Promise<unknown>;
 export const withStatus = (status: number, body: unknown) => ({ [STATUS]: status, body });
 const STATUS = Symbol("status");
 
-export class Router {
-  private routes: { method: string; pattern: RegExp; keys: string[]; handler: Handler }[] = [];
+type Route = { method: string; pattern: RegExp; keys: string[]; handler: Handler };
 
+export class Router {
+  private routes: Route[] = [];
+
+  /** Add a route. `:name` captures one path segment; a trailing `*` captures the rest as `rest`. */
   on(method: string, path: string, handler: Handler) {
     const keys: string[] = [];
     const pattern = new RegExp(
       "^" +
         path
           .replace(/\*$/, "(?<rest>.*)")
-          .replace(/:(\w+)/g, (_, k) => (keys.push(k), "([^/]+)")) +
+          .replace(/:(\w+)/g, (_, key) => (keys.push(key), "([^/]+)")) +
         "$",
     );
     this.routes.push({ method, pattern, keys, handler });
@@ -97,30 +100,52 @@ export class Router {
   }
 
   listen(port: number) {
-    const server = http.createServer(async (raw, res) => {
-      const url = new URL(raw.url ?? "/", "http://x");
-      const route = this.routes.find((r) => r.method === raw.method && r.pattern.test(url.pathname));
-      if (!route) return send(res, 404, { error: "not found" });
-      const m = route.pattern.exec(url.pathname)!;
-      const params: Record<string, string> = {};
-      route.keys.forEach((k, i) => (params[k] = decodeURIComponent(m[i + 1])));
-      if (m.groups?.rest !== undefined) params.rest = decodeURIComponent(m.groups.rest);
-      try {
-        let text = "";
-        for await (const chunk of raw) text += chunk;
-        const out: any = await route.handler({ params, query: url.searchParams, body: text ? JSON.parse(text) : {}, raw, res });
-        if (res.headersSent) return; // the handler streamed its own response
-        if (out && typeof out === "object" && STATUS in out) return send(res, out[STATUS], out.body);
-        send(res, 200, out ?? { ok: true });
-      } catch (e: any) {
-        if (res.headersSent) return res.end();
-        if (e instanceof HttpError) return send(res, e.status, e.body);
-        console.error(`${raw.method} ${url.pathname}:`, e?.message ?? e);
-        send(res, 500, { error: String(e?.message ?? e) });
-      }
-    });
+    const server = http.createServer((raw, res) => this.handle(raw, res));
     return new Promise<http.Server>((resolve) => server.listen(port, () => resolve(server)));
   }
+
+  private async handle(raw: http.IncomingMessage, res: http.ServerResponse) {
+    const url = new URL(raw.url ?? "/", "http://x");
+    const route = this.routes.find((r) => r.method === raw.method && r.pattern.test(url.pathname));
+    if (!route) return send(res, 404, { error: "not found" });
+
+    try {
+      const body = await readJsonBody(raw);
+      const result = await route.handler({ params: pathParams(route, url.pathname), query: url.searchParams, body, raw, res });
+      respond(res, result);
+    } catch (e) {
+      respondWithError(res, e, `${raw.method} ${url.pathname}`);
+    }
+  }
+}
+
+function pathParams(route: Route, pathname: string): Record<string, string> {
+  const match = route.pattern.exec(pathname)!;
+  const params: Record<string, string> = {};
+  route.keys.forEach((key, i) => (params[key] = decodeURIComponent(match[i + 1])));
+  if (match.groups?.rest !== undefined) params.rest = decodeURIComponent(match.groups.rest);
+  return params;
+}
+
+async function readJsonBody(raw: http.IncomingMessage) {
+  let text = "";
+  for await (const chunk of raw) text += chunk;
+  return text ? JSON.parse(text) : {};
+}
+
+/** A handler's return value becomes the response: 200 by default, or `withStatus(...)`. */
+function respond(res: http.ServerResponse, result: any) {
+  if (res.headersSent) return; // the handler streamed its own response
+  if (result && typeof result === "object" && STATUS in result) return send(res, result[STATUS], result.body);
+  send(res, 200, result ?? { ok: true });
+}
+
+/** A thrown HttpError keeps its status and body; anything else is a 500. */
+function respondWithError(res: http.ServerResponse, e: any, what: string) {
+  if (res.headersSent) return res.end();
+  if (e instanceof HttpError) return send(res, e.status, e.body);
+  console.error(`${what}:`, e?.message ?? e);
+  send(res, 500, { error: String(e?.message ?? e) });
 }
 
 function send(res: http.ServerResponse, status: number, body: unknown) {
