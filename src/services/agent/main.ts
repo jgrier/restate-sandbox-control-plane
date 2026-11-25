@@ -8,7 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { turnDelayMs, urls } from "../../config.js";
-import { Router, deliverWebhook, openSse, request, sleep, withStatus } from "../../lib/http.js";
+import { HttpError, Router, deliverWebhook, openSse, request, sleep } from "../../lib/http.js";
 import { logger } from "../../lib/log.js";
 
 const sandboxId = process.env.SANDBOX_ID!;
@@ -33,62 +33,74 @@ const { path: diskPath } = await request("POST", `${urls.disks}/disks/${diskId}/
 });
 const transcriptFile = path.join(diskPath, "transcript.jsonl");
 const transcript: Entry[] = fs.existsSync(transcriptFile)
-  ? fs.readFileSync(transcriptFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
+  ? fs.readFileSync(transcriptFile, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
   : [];
-let mounted = true;
 
-const streams = new Set<ReturnType<typeof openSse>>();
+let mounted = true;
 let currentTurn: string | null = null;
 let shuttingDown = false;
+const streams = new Set<ReturnType<typeof openSse>>();
 
-/** Every step is written to the disk before it's streamed, so a crash loses nothing written. */
-function append(entry: Entry) {
-  transcript.push(entry);
-  fs.appendFileSync(transcriptFile, JSON.stringify(entry) + "\n");
-}
-function broadcast(event: string, data: unknown) {
-  for (const s of streams) s.closed() ? streams.delete(s) : s.send(event, data);
-}
-const now = () => Date.now();
+// ------------------------------------------------------------------ the API
 
-// ------------------------------------------------------------------ turns
+new Router()
+  .on("GET", "/health", () => health())
+  .on("POST", "/api/prompt", ({ body }) => prompt(body.messageId, body.text))
+  .on("GET", "/api/events", ({ res }) => streamEvents(res))
+  .on("POST", "/api/shutdown", () => shutdown())
+  .listen(Number(process.env.PORT))
+  .then(() => log.info(`agent up, disk mounted, ${transcript.length} transcript entries`, sandboxId));
 
-const turnEnd = (messageId: string) => transcript.find((e) => e.type === "turn_end" && e.messageId === messageId);
-const userMessage = (messageId: string) =>
-  transcript.find((e): e is Extract<Entry, { type: "user" }> => e.type === "user" && e.messageId === messageId);
+process.on("SIGTERM", async () => {
+  await unmount();
+  process.exit(0);
+});
 
-/** Close any earlier turn that never finished, before a new one starts. */
-function closeOpenTurns() {
-  for (const e of transcript)
-    if (e.type === "user" && !turnEnd(e.messageId)) {
-      append({ type: "system", messageId: e.messageId, note: "This turn was interrupted and abandoned.", at: now() });
-      append({ type: "turn_end", messageId: e.messageId, status: "interrupted", at: now() });
-    }
+// ------------------------------------------------------------------ operations
+
+function health() {
+  return { ok: true, sandboxId };
 }
 
-/** Repair an interrupted turn: close dangling tool calls and tell the model what happened. */
-function repairInterruptedTurn(messageId: string) {
-  const results = new Set(transcript.filter((e) => e.type === "tool_result").map((e: any) => e.callId));
-  for (const e of transcript)
-    if (e.type === "tool_call" && e.messageId === messageId && !results.has(e.callId))
-      append({
-        type: "tool_result", messageId, callId: e.callId, at: now(),
-        error: "interrupted: the sandbox stopped before this tool finished; its outcome is unknown",
-      });
-  const note =
-    "Your previous sandbox stopped unexpectedly during this turn. Continue from the transcript. " +
-    "Check the state of any side effects before repeating them.";
-  append({ type: "system", messageId, note, at: now() });
-  broadcast("system", { messageId, note });
-}
+/** Take a prompt and start its turn. Idempotent per messageId, using the transcript on disk. */
+function prompt(messageId: string, text: string) {
+  if (shuttingDown) throw new HttpError(503, { error: "shutting down" }, "prompt");
+  if (findTurnEnd(messageId)) return { status: "already-completed" };
+  if (currentTurn === messageId) return { status: "admitted" }; // a duplicate POST
+  if (currentTurn) throw new HttpError(409, { error: `busy with ${currentTurn}` }, "prompt");
 
-async function streamWords(messageId: string, text: string) {
-  for (const word of text.split(" ")) {
-    broadcast("assistant.delta", { messageId, text: word + " " });
-    await sleep(turnDelayMs);
+  const earlier = findUserMessage(messageId);
+  if (earlier) {
+    // The same message, but no turn_end: a previous VM died during this turn.
+    log.warn(`recovering interrupted turn ${messageId}`, sandboxId);
+    repairInterruptedTurn(messageId);
+    void runTurn(messageId, earlier.text, true);
+    return { status: "admitted", recovered: true };
   }
-  return text;
+
+  closeOpenTurns();
+  append({ type: "user", messageId, text, at: Date.now() });
+  broadcast("user", { messageId, text });
+  void runTurn(messageId, text, false);
+  return { status: "admitted" };
 }
+
+/** SSE: a snapshot of the transcript, then every event of every turn as it happens. */
+function streamEvents(res: Parameters<typeof openSse>[0]) {
+  const stream = openSse(res);
+  stream.send("snapshot", { sandboxId, transcript, currentTurn });
+  streams.add(stream);
+}
+
+/** Graceful shutdown hook: stop taking prompts, flush, unmount. */
+async function shutdown() {
+  shuttingDown = true;
+  await unmount();
+  log.info("shutdown hook: unmounted disk", sandboxId);
+  return { ok: true };
+}
+
+// ------------------------------------------------------------------ a turn
 
 async function runTurn(messageId: string, text: string, recovered: boolean) {
   currentTurn = messageId;
@@ -103,73 +115,93 @@ async function runTurn(messageId: string, text: string, recovered: boolean) {
   );
 
   // One simulated tool call, so there's a window to crash in mid-tool.
-  const callId = randomUUID().slice(0, 8);
-  append({ type: "tool_call", messageId, callId, name: "count_words", args: { text }, at: now() });
-  broadcast("tool.started", { messageId, callId, name: "count_words" });
-  await sleep(1_500);
-  const words = text.trim().split(/\s+/).filter(Boolean).length;
-  append({ type: "tool_result", messageId, callId, result: `${words} words`, at: now() });
-  broadcast("tool.finished", { messageId, callId, result: `${words} words` });
+  const words = await countWordsTool(messageId, text);
 
   reply += " " + (await streamWords(messageId, `The tool says your message has ${words} words. You said: "${text}".`));
-  append({ type: "assistant", messageId, text: reply, at: now() });
-  append({ type: "turn_end", messageId, status: "completed", at: now() });
+  append({ type: "assistant", messageId, text: reply, at: Date.now() });
+  append({ type: "turn_end", messageId, status: "completed", at: Date.now() });
   broadcast("turn.ended", { messageId });
   currentTurn = null;
   log.info(`turn finished (${messageId})`, sandboxId);
 
+  await reportTurnEnded(messageId);
+}
+
+async function countWordsTool(messageId: string, text: string) {
+  const callId = randomUUID().slice(0, 8);
+  append({ type: "tool_call", messageId, callId, name: "count_words", args: { text }, at: Date.now() });
+  broadcast("tool.started", { messageId, callId, name: "count_words" });
+  await sleep(1_500);
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  append({ type: "tool_result", messageId, callId, result: `${words} words`, at: Date.now() });
+  broadcast("tool.finished", { messageId, callId, result: `${words} words` });
+  return words;
+}
+
+async function streamWords(messageId: string, text: string) {
+  for (const word of text.split(" ")) {
+    broadcast("assistant.delta", { messageId, text: word + " " });
+    await sleep(turnDelayMs);
+  }
+  return text;
+}
+
+/** The lifecycle webhook: tell the proxy (and through it, Restate) the turn is over. */
+async function reportTurnEnded(messageId: string) {
   await deliverWebhook(`${urls.proxy}/internal/events`, {
     eventId: randomUUID(), type: "turn.ended", sessionId, sandboxId, messageId,
   }).catch((e) => log.error(`could not report turn.ended: ${e}`, sandboxId));
 }
 
-// ------------------------------------------------------------------ HTTP
+// ------------------------------------------------------------------ recovering interrupted turns
 
-new Router()
-  .on("GET", "/health", () => ({ ok: true, sandboxId }))
-  .on("POST", "/api/prompt", ({ body }) => {
-    const { messageId, text } = body as { messageId: string; text: string };
-    if (shuttingDown) return withStatus(503, { error: "shutting down" });
-    if (turnEnd(messageId)) return { status: "already-completed" };
-    if (currentTurn === messageId) return { status: "admitted" }; // a duplicate POST
-    if (currentTurn) return withStatus(409, { error: `busy with ${currentTurn}` });
-
-    const existing = userMessage(messageId);
-    if (existing) {
-      // The same message, but no turn_end: a previous VM died during this turn.
-      log.warn(`recovering interrupted turn ${messageId}`, sandboxId);
-      repairInterruptedTurn(messageId);
-      void runTurn(messageId, existing.text, true);
-      return { status: "admitted", recovered: true };
+/** Close any earlier turn that never finished, before a new one starts. */
+function closeOpenTurns() {
+  for (const e of transcript)
+    if (e.type === "user" && !findTurnEnd(e.messageId)) {
+      append({ type: "system", messageId: e.messageId, note: "This turn was interrupted and abandoned.", at: Date.now() });
+      append({ type: "turn_end", messageId: e.messageId, status: "interrupted", at: Date.now() });
     }
-    closeOpenTurns();
-    append({ type: "user", messageId, text, at: now() });
-    broadcast("user", { messageId, text });
-    void runTurn(messageId, text, false);
-    return { status: "admitted" };
-  })
-  .on("GET", "/api/events", ({ res }) => {
-    const stream = openSse(res);
-    stream.send("snapshot", { sandboxId, transcript, currentTurn });
-    streams.add(stream);
-  })
-  /** Graceful shutdown hook: stop taking prompts, flush, unmount. */
-  .on("POST", "/api/shutdown", async () => {
-    shuttingDown = true;
-    await unmount();
-    log.info("shutdown hook: unmounted disk", sandboxId);
-    return { ok: true };
-  })
-  .listen(Number(process.env.PORT))
-  .then(() => log.info(`agent up, disk mounted, ${transcript.length} transcript entries`, sandboxId));
+}
+
+/** Repair an interrupted turn: close dangling tool calls and tell the model what happened. */
+function repairInterruptedTurn(messageId: string) {
+  const finished = new Set(transcript.filter((e) => e.type === "tool_result").map((e: any) => e.callId));
+  for (const e of transcript)
+    if (e.type === "tool_call" && e.messageId === messageId && !finished.has(e.callId))
+      append({
+        type: "tool_result", messageId, callId: e.callId, at: Date.now(),
+        error: "interrupted: the sandbox stopped before this tool finished; its outcome is unknown",
+      });
+  const note =
+    "Your previous sandbox stopped unexpectedly during this turn. Continue from the transcript. " +
+    "Check the state of any side effects before repeating them.";
+  append({ type: "system", messageId, note, at: Date.now() });
+  broadcast("system", { messageId, note });
+}
+
+// ------------------------------------------------------------------ transcript and streams
+
+/** Every step is written to the disk before it's streamed, so a crash loses nothing written. */
+function append(entry: Entry) {
+  transcript.push(entry);
+  fs.appendFileSync(transcriptFile, JSON.stringify(entry) + "\n");
+}
+
+function broadcast(event: string, data: unknown) {
+  for (const s of streams) s.closed() ? streams.delete(s) : s.send(event, data);
+}
+
+function findTurnEnd(messageId: string) {
+  return transcript.find((e) => e.type === "turn_end" && e.messageId === messageId);
+}
+
+function findUserMessage(messageId: string) {
+  return transcript.find((e): e is Extract<Entry, { type: "user" }> => e.type === "user" && e.messageId === messageId);
+}
 
 async function unmount() {
   if (!mounted) return;
   mounted = false;
   await request("POST", `${urls.disks}/disks/${diskId}/unmount`, { clientId: sandboxId }).catch(() => {});
 }
-
-process.on("SIGTERM", async () => {
-  await unmount();
-  process.exit(0);
-});
