@@ -34,7 +34,7 @@ The rest of the repo plays the outside world, so you can run the whole thing on 
 
 - **[Dummy sandbox service](src/services/sandboxes/main.ts)**, shaped like CubeSandbox. Each "VM" is a child process.
 - **[Dummy disk service](src/services/disks/main.ts)**, shaped like Archil. Each disk is a directory, with exclusive mounts.
-- **[Fake agent-server](src/services/agent/main.ts)**: an echo "model" with a simulated tool call. It keeps an append-only transcript on the disk, and repairs and resumes a turn its predecessor didn't finish.
+- **[Fake agent-server](src/services/agent/main.ts)**: an echo "model" with a simulated tool call. It keeps an append-only transcript on the disk. When a new VM's agent finds a turn its predecessor didn't finish, it marks that turn as interrupted. If the VM died just as it took the prompt, so the prompt is sent again, the agent picks that turn back up instead.
 - **[Session proxy](src/proxy/main.ts)**: the product API. It's the only thing that talks to Restate, and it serves a demo page.
 
 ## Run it
