@@ -1,12 +1,17 @@
 # Agent sessions on Restate
 
+> **What to read:** [`src/restate/session.ts`](src/restate/session.ts). That's where the Restate
+> code worth studying is, and the other files in [`src/restate/`](src/restate/) are short helpers
+> to it. You can skip everything else: the dummy CubeSandbox and Archil services, the fake agent,
+> the proxy, the SSE streaming and the demo page only exist so the demo runs on a laptop.
+
 The control plane of an AI-agent harness, written as four small [Restate](https://restate.dev)
 virtual objects.
 
 Each agent session runs in a disposable sandbox VM, with its conversation on a persistent
 network disk. VMs are destroyed after a few idle minutes, and the next prompt boots a fresh VM
-on the same disk. Prompts must be delivered exactly once, in order, one turn at a time. A VM
-that dies mid-turn must not lose the turn.
+on the same disk. Prompts must be delivered exactly once, in order, one turn at a time, and a
+dead or hung VM is replaced automatically.
 
 That's a lot of distributed-systems machinery: locks, queues, retries, timers, crash recovery.
 Here, Restate provides all of it, and the handlers read like the flow they implement.
