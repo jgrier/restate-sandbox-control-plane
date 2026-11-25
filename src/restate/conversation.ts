@@ -14,27 +14,36 @@ export type PromptOutcome =
   | { status: "completed" }
   | { status: "aborted" | "rejected" | "failed"; reason: string };
 
+// Restate: virtual object. One invocation per key at a time, in arrival order: this key's inbox
+// is the prompt queue.
 export const Conversation = restate.object({
   name: "Conversation",
   handlers: {
     deliver: async (ctx: restate.ObjectContext, prompt: Prompt & { generation: number }): Promise<PromptOutcome> => {
+      // Restate: a client for calling another virtual object (request-response).
       const session = ctx.objectClient(Session, ctx.key);
 
-      // The agent's `turn.ended` reaches Session, which completes this awakeable.
+      // Restate: awakeable, a durable promise with an id. Session completes it when the agent's
+      // `turn.ended` arrives (or the turn is aborted).
       const turn = ctx.awakeable<TurnOutcome>();
 
       // Hand the prompt to an agent. Session deals with dead or hung VMs; this either works
       // or fails for good.
+      // Restate: a call between objects, with a timeout (orTimeout). Timing out stops our wait;
+      // it doesn't cancel the work Session is doing.
       let reply: DeliverReply;
       try {
         reply = await session.deliverPrompt({ ...prompt, turnToken: turn.id }).orTimeout(deliverTimeout);
       } catch (e) {
+        // Restate: a TerminalError is a final answer, never retried. Anything else is retried.
         if (!(e instanceof restate.TerminalError)) throw e;
         return { status: e.code === 409 ? "rejected" : "failed", reason: e.message };
       }
       if (reply.status === "already-completed") return { status: "completed" };
 
       // Wait for the turn to end. The next prompt stays queued until then.
+      // Restate: while waiting, the invocation is suspended (no compute); the timeout is a
+      // durable timer.
       let outcome: TurnOutcome;
       try {
         outcome = await turn.promise.orTimeout(timeouts.maxTurn);

@@ -21,6 +21,7 @@ type SandboxState = {
 
 type Ctx = restate.ObjectContext<SandboxState>;
 
+// Restate: virtual object keyed by sandbox id: the digital twin of one VM.
 export const Sandbox = restate.object({
   name: "Sandbox",
   handlers: {
@@ -34,6 +35,8 @@ export const Sandbox = restate.object({
       ctx.set("diskId", req.diskId);
       ctx.console.info(`booting VM on ${req.diskId}`);
       try {
+        // Restate: ctx.run around the side effect. The object's key (the sandbox id) is also the
+        // idempotency token, so if this step re-runs, the service returns the same VM.
         const { agentUrl } = await ctx.run("create VM", () => sandboxes.create({ sandboxId: ctx.key, ...req }), retry);
         ctx.set("agentUrl", agentUrl);
         ctx.set("status", "running");
@@ -70,6 +73,7 @@ export const Sandbox = restate.object({
       await destroyVm(ctx, "idle");
     },
 
+    // Restate: shared handler (read-only, never blocked).
     getStatus: restate.handlers.object.shared(statusRead, async (ctx: restate.ObjectSharedContext<SandboxState>) => ({
       status: (await ctx.get("status")) ?? "unknown",
       diskId: await ctx.get("diskId"),
@@ -86,13 +90,17 @@ export const Sandbox = restate.object({
  */
 async function armIdleTimer(ctx: Ctx): Promise<void> {
   await cancelIdleTimer(ctx);
+  // Restate: a durable timer is a one-way send with a delay. It survives restarts, and its
+  // invocation id lets us cancel it.
   const timer = ctx.objectSendClient(Sandbox, ctx.key).idleTimeout(restate.rpc.sendOpts({ delay: timeouts.idle }));
   ctx.set("idleTimer", await timer.invocationId);
+  // Restate: ctx.date.now() is journaled, so replays see the same time.
   ctx.set("lastActivityAt", await ctx.date.now());
 }
 
 async function cancelIdleTimer(ctx: Ctx): Promise<void> {
   const timer = await ctx.get("idleTimer");
+  // Restate: cancel a pending invocation (here, the scheduled timer) by its id.
   if (timer) ctx.invocation(timer as restate.InvocationId).cancel();
   ctx.clear("idleTimer");
 }

@@ -35,6 +35,8 @@ export type LifecycleEvent =
   | { eventId: string; type: "turn.ended"; sandboxId: string; messageId: string }
   | { eventId: string; type: "sandbox.stopped"; sandboxId: string; reason: "deleted" | "crashed" };
 
+// Restate: virtual object keyed by session id. Exclusive handlers (the default) run one at a time
+// per key, and each one reads and writes this key's state atomically.
 export const Session = restate.object({
   name: "Session",
   handlers: {
@@ -42,6 +44,7 @@ export const Session = restate.object({
       if (await ctx.get("status")) return; // already created
 
       const diskId = `disk-${ctx.key}`;
+      // Restate: call another virtual object (Disk[diskId]) and wait for its reply.
       await ctx.objectClient(Disk, diskId).create({ labels: { sessionId: ctx.key, ownerId: req.ownerId } }).orTimeout(timeouts.call);
       ctx.set("status", "active");
       ctx.set("ownerId", req.ownerId);
@@ -64,11 +67,14 @@ export const Session = restate.object({
      */
     deliverPrompt: async (ctx: Ctx, req: Prompt & { turnToken: string; generation: number }): Promise<DeliverReply> => {
       const rejected = await rejection(ctx, req.generation);
+      // Restate: TerminalError fails the call for good (no retries); the code reaches the caller.
       if (rejected) throw new restate.TerminalError(rejected, { errorCode: 409 });
 
       const prompt = { messageId: req.messageId, text: req.text, attachmentRefs: req.attachmentRefs };
       for (let attempt = 1; attempt <= maxDeliveryAttempts; attempt++) {
         const { sandboxId, agentUrl } = await liveSandbox(ctx);
+        // Restate: ctx.run journals the side effect's result. If it throws, the handler is re-run
+        // and this step executes again (bounded by `retry`); once it succeeds it's never repeated.
         const reply = await ctx.run("send prompt to agent", () => agent.prompt(agentUrl, prompt), retry);
 
         if (reply.status === "unreachable") {
@@ -79,7 +85,9 @@ export const Session = restate.object({
         }
         if (reply.status === "admitted") {
           ctx.set("currentTurn", { messageId: req.messageId, turnToken: req.turnToken, sandboxId });
+          // Restate: one-way send. Delivered durably; we don't wait for Sandbox to process it.
           ctx.objectSendClient(Sandbox, sandboxId).touch();
+          // Restate: ctx.console logs are suppressed while a journal is being replayed.
           ctx.console.info(`turn ${req.messageId} started on ${sandboxId}`);
           return { status: "admitted" };
         }
@@ -113,6 +121,7 @@ export const Session = restate.object({
 
     /** Stop the session's sandbox and reject prompts sent before now. The next prompt wakes it again. */
     stop: async (ctx: Ctx) => {
+      // Restate: object state. ctx.set is committed together with the invocation's progress.
       ctx.set("generation", ((await ctx.get("generation")) ?? 0) + 1);
       await stopSandbox(ctx, "stopped");
       ctx.console.info("session stopped");
@@ -134,6 +143,8 @@ export const Session = restate.object({
       ctx.console.info("session deleted");
     },
 
+    // Restate: shared handler. Read-only, and runs alongside the exclusive ones, so it's never
+    // blocked by a running handler.
     getStatus: restate.handlers.object.shared(statusRead, async (ctx: restate.ObjectSharedContext<SessionState>) => ({
       status: (await ctx.get("status")) ?? "unknown",
       ownerId: await ctx.get("ownerId"),
@@ -161,6 +172,8 @@ async function liveSandbox(ctx: Ctx): Promise<{ sandboxId: string; agentUrl: str
     if (vm.status === "running") return { sandboxId: current, agentUrl: vm.agentUrl! };
   }
 
+  // Restate: ctx.rand is deterministic. The value is recorded in the journal, so a retry or a
+  // replay gets the same id (and the sandbox service creates the same VM, not a second one).
   const sandboxId = `sbx-${ctx.rand.uuidv4().slice(0, 8)}`;
   const diskId = (await ctx.get("diskId"))!;
   ctx.console.info(current ? `${current} is gone, starting ${sandboxId}` : `starting ${sandboxId}`);
@@ -187,6 +200,7 @@ async function stopSandbox(ctx: Ctx, reason: string): Promise<void> {
 
 /** Wake up the Conversation waiting on this turn. */
 function endTurn(ctx: Ctx, turn: Turn, outcome: TurnOutcome): void {
+  // Restate: complete the awakeable Conversation is waiting on, from a different handler.
   ctx.resolveAwakeable(turn.turnToken, outcome);
   ctx.clear("currentTurn");
 }

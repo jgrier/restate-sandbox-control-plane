@@ -16,6 +16,8 @@ import { Disk } from "../restate/disk.js";
 import { Sandbox } from "../restate/sandbox.js";
 import { Session, type LifecycleEvent } from "../restate/session.js";
 
+// Restate: the ingress client. The proxy calls handlers through restate-server's ingress (:8080),
+// never through the admin API.
 const restate = clients.connect({ url: urls.restateIngress });
 // Every call to Restate has a timeout.
 const opts = (extra: { idempotencyKey?: string } = {}): any => clients.rpc.opts({ timeout: timeouts.proxy, ...extra });
@@ -41,6 +43,8 @@ async function sendPrompt(sessionId: string, prompt: { messageId: string; text: 
   const status = await restate.objectClient(Session, sessionId).getStatus(opts());
   if (status.status !== "active") return withStatus(409, { error: `session is ${status.status}` });
 
+  // Restate: one-way send through ingress. It returns once Restate has the invocation durably;
+  // the idempotency key (from the client's message id) makes browser retries harmless.
   const handle = await restate
     .objectSendClient(Conversation, sessionId)
     .deliver({ ...prompt, generation: status.generation }, clients.rpc.sendOpts({ idempotencyKey: `prompt:${sessionId}:${prompt.messageId}` }));
@@ -139,6 +143,7 @@ new Router()
   // ---- browser API
   .on("POST", "/api/sessions", async ({ body }) => {
     const sessionId: string = body.sessionId ?? newId("s");
+    // Restate: request-response call through ingress, deduplicated by its idempotency key.
     await restate.objectClient(Session, sessionId).create({ ownerId: body.ownerId ?? "demo-user" }, opts({ idempotencyKey: `create:${sessionId}` }));
     log.info("session created", sessionId);
     if (!body.firstPrompt) return withStatus(201, { sessionId });
@@ -149,6 +154,7 @@ new Router()
   )
   .on("GET", "/api/prompts/:invocationId", async ({ params }) => {
     // The prompt's final outcome, once Conversation.deliver has finished.
+    // Restate: read an invocation's result by its id, through ingress.
     const r = await fetch(`${urls.restateIngress}/restate/invocation/${params.invocationId}/output`, {
       signal: AbortSignal.timeout(timeouts.proxy),
     });
@@ -184,6 +190,7 @@ new Router()
   .on("POST", "/internal/events", async ({ body }) => {
     const event = body as LifecycleEvent & { sessionId?: string };
     if (!event.sessionId) return withStatus(400, { error: "event without sessionId" });
+    // Restate: one-way send keyed by the event id, so a webhook delivered twice runs once.
     await restate
       .objectSendClient(Session, event.sessionId)
       .onEvent(event, clients.rpc.sendOpts({ idempotencyKey: `event:${event.eventId}` }));

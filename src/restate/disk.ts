@@ -13,12 +13,15 @@ type DiskState = {
   assignedSandboxId: string;
 };
 
+// Restate: virtual object keyed by disk id: the digital twin of one disk.
 export const Disk = restate.object({
   name: "Disk",
   handlers: {
     create: async (ctx: restate.ObjectContext<DiskState>, req: { labels: Record<string, string> }) => {
+      // Restate: object state (ctx.get / ctx.set), private to this key.
       if (await ctx.get("status")) return; // already created
 
+      // Restate: ctx.run around the side effect; the disk id is the idempotency token.
       const { mountToken } = await ctx.run("create disk", () => disks.create(ctx.key, req.labels), retry);
       ctx.set("mountToken", mountToken);
       ctx.set("status", "ready");
@@ -49,6 +52,7 @@ export const Disk = restate.object({
       ctx.console.info("disk deleted");
     },
 
+    // Restate: shared handler (read-only, never blocked).
     getStatus: restate.handlers.object.shared(statusRead, async (ctx: restate.ObjectSharedContext<DiskState>) => ({
       status: (await ctx.get("status")) ?? "unknown",
       assignedSandboxId: await ctx.get("assignedSandboxId"),
