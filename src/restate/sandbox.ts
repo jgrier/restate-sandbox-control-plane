@@ -20,28 +20,21 @@ type SandboxState = {
 };
 
 type Ctx = restate.ObjectContext<SandboxState>;
+type StartRequest = Omit<CreateVm, "sandboxId">;
 
 // Restate: virtual object keyed by sandbox id: the digital twin of one VM.
 export const Sandbox = restate.object({
   name: "Sandbox",
   handlers: {
     /** Boot the VM with its disk attached. Returns once the agent inside is healthy. */
-    start: async (ctx: Ctx, req: Omit<CreateVm, "sandboxId">): Promise<{ agentUrl: string }> => {
+    start: async (ctx: Ctx, req: StartRequest): Promise<{ agentUrl: string }> => {
       const status = await ctx.get("status");
       if (status === "running") return { agentUrl: (await ctx.get("agentUrl"))! };
       if (status === "destroyed") throw new restate.TerminalError(`${ctx.key} is destroyed`);
 
-      ctx.set("status", "starting");
-      ctx.set("diskId", req.diskId);
-      ctx.console.info(`booting VM on ${req.diskId}`);
       try {
-        // Restate: ctx.run around the side effect. The object's key (the sandbox id) is also the
-        // idempotency token, so if this step re-runs, the service returns the same VM.
-        const { agentUrl } = await ctx.run("create VM", () => sandboxes.create({ sandboxId: ctx.key, ...req }), retry);
-        ctx.set("agentUrl", agentUrl);
-        ctx.set("status", "running");
+        const agentUrl = await bootVm(ctx, req);
         await armIdleTimer(ctx);
-        ctx.console.info("VM running");
         return { agentUrl };
       } catch (e) {
         await markDestroyed(ctx, "failed to boot");
@@ -51,16 +44,17 @@ export const Sandbox = restate.object({
 
     /** Activity: push the idle shutdown back. */
     touch: async (ctx: Ctx) => {
-      if ((await ctx.get("status")) === "running") await armIdleTimer(ctx);
+      if (await isRunning(ctx)) await armIdleTimer(ctx);
     },
 
     /** The idle timer fired. */
     idleTimeout: async (ctx: Ctx) => {
-      ctx.clear("idleTimer"); // this invocation *is* the timer
+      ctx.clear("idleTimer"); // this invocation *is* the timer, so there's nothing to cancel
       ctx.console.info(`idle for ${timeouts.idle / 1000}s, shutting down`);
       await destroyVm(ctx, "idle");
     },
 
+    /** Shut the VM down (shutdown hook, then destroy). */
     stop: async (ctx: Ctx, req: { reason: string }) => destroyVm(ctx, req.reason),
 
     /** The VM is gone (it crashed, or someone else destroyed it). Just record it. */
@@ -84,6 +78,48 @@ export const Sandbox = restate.object({
   },
 });
 
+// ------------------------------------------------------------------ the VM
+
+/** Create the VM through the sandbox service; returns once its agent is healthy. */
+async function bootVm(ctx: Ctx, req: StartRequest): Promise<string> {
+  ctx.set("status", "starting");
+  ctx.set("diskId", req.diskId);
+  ctx.console.info(`booting VM on ${req.diskId}`);
+
+  // Restate: ctx.run around the side effect. The object's key (the sandbox id) is also the
+  // idempotency token, so if this step re-runs, the service returns the same VM.
+  const { agentUrl } = await ctx.run("create VM", () => sandboxes.create({ sandboxId: ctx.key, ...req }), retry);
+
+  ctx.set("agentUrl", agentUrl);
+  ctx.set("status", "running");
+  ctx.console.info("VM running");
+  return agentUrl;
+}
+
+/** Graceful shutdown hook (flush, unmount), then destroy the VM. */
+async function destroyVm(ctx: Ctx, reason: string): Promise<void> {
+  if (!(await isRunning(ctx))) return;
+  const agentUrl = (await ctx.get("agentUrl"))!;
+
+  await ctx.run("shutdown hook", () => agent.shutdown(agentUrl));
+  await ctx.run("destroy VM", () => sandboxes.destroy(ctx.key), retry);
+  await markDestroyed(ctx, reason);
+}
+
+async function markDestroyed(ctx: Ctx, reason: string): Promise<void> {
+  if ((await ctx.get("status")) === "destroyed") return;
+  ctx.set("status", "destroyed");
+  ctx.set("destroyedReason", reason);
+  await cancelIdleTimer(ctx);
+  ctx.console.info(`destroyed (${reason})`);
+}
+
+async function isRunning(ctx: Ctx): Promise<boolean> {
+  return (await ctx.get("status")) === "running";
+}
+
+// ------------------------------------------------------------------ the idle timer
+
 /**
  * The idle timer is a delayed call to ourselves. Activity cancels the pending call and
  * schedules a fresh one: no clocks to compare, no counters.
@@ -103,22 +139,4 @@ async function cancelIdleTimer(ctx: Ctx): Promise<void> {
   // Restate: cancel a pending invocation (here, the scheduled timer) by its id.
   if (timer) ctx.invocation(timer as restate.InvocationId).cancel();
   ctx.clear("idleTimer");
-}
-
-/** Graceful shutdown hook (flush, unmount), then destroy the VM. */
-async function destroyVm(ctx: Ctx, reason: string): Promise<void> {
-  if ((await ctx.get("status")) !== "running") return;
-  const agentUrl = (await ctx.get("agentUrl"))!;
-
-  await ctx.run("shutdown hook", () => agent.shutdown(agentUrl));
-  await ctx.run("destroy VM", () => sandboxes.destroy(ctx.key), retry);
-  await markDestroyed(ctx, reason);
-}
-
-async function markDestroyed(ctx: Ctx, reason: string): Promise<void> {
-  if ((await ctx.get("status")) === "destroyed") return;
-  ctx.set("status", "destroyed");
-  ctx.set("destroyedReason", reason);
-  await cancelIdleTimer(ctx);
-  ctx.console.info(`destroyed (${reason})`);
 }

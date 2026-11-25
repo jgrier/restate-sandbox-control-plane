@@ -6,7 +6,7 @@
 // (Conversation does that), so stop, delete and events always get through promptly.
 
 import * as restate from "@restatedev/restate-sdk";
-import { agent, type Prompt } from "../clients/agent.js";
+import { agent, type Prompt, type PromptReply } from "../clients/agent.js";
 import { maxDeliveryAttempts, startCallTimeout, timeouts } from "../config.js";
 import { retry, statusRead } from "./common.js";
 import { Disk } from "./disk.js";
@@ -24,6 +24,8 @@ type SessionState = {
 };
 
 type Ctx = restate.ObjectContext<SessionState>;
+type LiveSandbox = { sandboxId: string; agentUrl: string };
+type PromptRequest = Prompt & { turnToken: string; generation: number };
 
 /** How a turn ends, as reported to the awakeable Conversation is waiting on. */
 export type TurnOutcome = { status: "completed" } | { status: "aborted"; reason: string };
@@ -35,28 +37,24 @@ export type LifecycleEvent =
   | { eventId: string; type: "turn.ended"; sandboxId: string; messageId: string }
   | { eventId: string; type: "sandbox.stopped"; sandboxId: string; reason: "deleted" | "crashed" };
 
+type TurnEnded = Extract<LifecycleEvent, { type: "turn.ended" }>;
+type SandboxStopped = Extract<LifecycleEvent, { type: "sandbox.stopped" }>;
+
 // Restate: virtual object keyed by session id. Exclusive handlers (the default) run one at a time
 // per key, and each one reads and writes this key's state atomically.
 export const Session = restate.object({
   name: "Session",
   handlers: {
+    /** Create the session and its disk. Idempotent. */
     create: async (ctx: Ctx, req: { ownerId: string }) => {
-      if (await ctx.get("status")) return; // already created
-
-      const diskId = `disk-${ctx.key}`;
-      // Restate: call another virtual object (Disk[diskId]) and wait for its reply.
-      await ctx.objectClient(Disk, diskId).create({ labels: { sessionId: ctx.key, ownerId: req.ownerId } }).orTimeout(timeouts.call);
-      ctx.set("status", "active");
-      ctx.set("ownerId", req.ownerId);
-      ctx.set("diskId", diskId);
-      ctx.set("generation", 0);
-      ctx.console.info(`session created, disk ${diskId}`);
+      if (await exists(ctx)) return;
+      const diskId = await createDisk(ctx, req.ownerId);
+      markActive(ctx, req.ownerId, diskId);
     },
 
     /** Get or create a live sandbox, and return where its agent is. */
     resume: async (ctx: Ctx) => {
-      const rejected = await rejection(ctx);
-      if (rejected) throw new restate.TerminalError(rejected, { errorCode: 409 });
+      await requireAcceptsPrompts(ctx);
       return liveSandbox(ctx);
     },
 
@@ -65,35 +63,21 @@ export const Session = restate.object({
      * to be unreachable. Either the prompt is delivered, or this fails with a TerminalError (409 if
      * the session can't take it, 503 if no VM would take it). Doesn't wait for the turn.
      */
-    deliverPrompt: async (ctx: Ctx, req: Prompt & { turnToken: string; generation: number }): Promise<DeliverReply> => {
-      const rejected = await rejection(ctx, req.generation);
-      // Restate: TerminalError fails the call for good (no retries); the code reaches the caller.
-      if (rejected) throw new restate.TerminalError(rejected, { errorCode: 409 });
+    deliverPrompt: async (ctx: Ctx, req: PromptRequest): Promise<DeliverReply> => {
+      await requireAcceptsPrompts(ctx, req.generation);
 
-      const prompt = { messageId: req.messageId, text: req.text, attachmentRefs: req.attachmentRefs };
       for (let attempt = 1; attempt <= maxDeliveryAttempts; attempt++) {
-        const { sandboxId, agentUrl } = await liveSandbox(ctx);
-        // Restate: ctx.run journals the side effect's result. If it throws, the handler is re-run
-        // and this step executes again (bounded by `retry`); once it succeeds it's never repeated.
-        const reply = await ctx.run("send prompt to agent", () => agent.prompt(agentUrl, prompt), retry);
+        const sandbox = await liveSandbox(ctx);
+        const reply = await sendPromptToAgent(ctx, sandbox, req);
 
         if (reply.status === "unreachable") {
-          // Dead or hung: make sure it's really gone; the next attempt starts a new one.
-          ctx.console.warn(`agent on ${sandboxId} is unreachable, replacing the VM`);
-          await ctx.objectClient(Sandbox, sandboxId).stop({ reason: "unreachable" }).orTimeout(timeouts.call + timeouts.shutdown);
+          await replaceUnreachableSandbox(ctx, sandbox);
           continue;
         }
-        if (reply.status === "admitted") {
-          ctx.set("currentTurn", { messageId: req.messageId, turnToken: req.turnToken, sandboxId });
-          // Restate: one-way send. Delivered durably; we don't wait for Sandbox to process it.
-          ctx.objectSendClient(Sandbox, sandboxId).touch();
-          // Restate: ctx.console logs are suppressed while a journal is being replayed.
-          ctx.console.info(`turn ${req.messageId} started on ${sandboxId}`);
-          return { status: "admitted" };
-        }
-        return { status: "already-completed" };
+        if (reply.status === "admitted") recordTurnStarted(ctx, req, sandbox);
+        return { status: reply.status };
       }
-      throw new restate.TerminalError(`no agent took the prompt after ${maxDeliveryAttempts} VMs`, { errorCode: 503 });
+      throw noAgentTookThePrompt();
     },
 
     /**
@@ -102,27 +86,13 @@ export const Session = restate.object({
      * event only acts if it matches the current state (the turn in flight, a live sandbox).
      */
     onEvent: async (ctx: Ctx, event: LifecycleEvent) => {
-      const turn = await ctx.get("currentTurn");
-      if (event.type === "turn.ended") {
-        // Must be this turn, on this sandbox: a recovered turn keeps its messageId but runs on a new VM.
-        if (turn?.messageId !== event.messageId || turn.sandboxId !== event.sandboxId) return;
-        endTurn(ctx, turn, { status: "completed" });
-        ctx.objectSendClient(Sandbox, event.sandboxId).touch();
-        ctx.console.info(`turn ${event.messageId} ended`);
-      } else {
-        await ctx.objectClient(Sandbox, event.sandboxId).markDestroyed({ reason: event.reason }).orTimeout(timeouts.call);
-        if (turn?.sandboxId === event.sandboxId) {
-          const reason = event.reason === "crashed" ? "vm died" : "vm destroyed";
-          ctx.console.warn(`${event.sandboxId} stopped mid-turn (${reason})`);
-          endTurn(ctx, turn, { status: "aborted", reason });
-        }
-      }
+      if (event.type === "turn.ended") await onTurnEnded(ctx, event);
+      else await onSandboxStopped(ctx, event);
     },
 
     /** Stop the session's sandbox and reject prompts sent before now. The next prompt wakes it again. */
     stop: async (ctx: Ctx) => {
-      // Restate: object state. ctx.set is committed together with the invocation's progress.
-      ctx.set("generation", ((await ctx.get("generation")) ?? 0) + 1);
+      await rejectPromptsSentBeforeNow(ctx);
       await stopSandbox(ctx, "stopped");
       ctx.console.info("session stopped");
     },
@@ -133,12 +103,12 @@ export const Session = restate.object({
       await stopSandbox(ctx, req.reason);
     },
 
+    /** Stop the sandbox, delete the disk. The session refuses everything afterwards. */
     delete: async (ctx: Ctx) => {
       if ((await ctx.get("status")) !== "active") return;
-
-      ctx.set("generation", ((await ctx.get("generation")) ?? 0) + 1);
+      await rejectPromptsSentBeforeNow(ctx);
       await stopSandbox(ctx, "stopped");
-      await ctx.objectClient(Disk, (await ctx.get("diskId"))!).delete().orTimeout(timeouts.call);
+      await deleteDisk(ctx);
       ctx.set("status", "deleted");
       ctx.console.info("session deleted");
     },
@@ -156,35 +126,119 @@ export const Session = restate.object({
   },
 });
 
-/** Why this session can't take a prompt right now, if it can't. */
-async function rejection(ctx: Ctx, generation?: number): Promise<string | undefined> {
-  const status = await ctx.get("status");
-  if (status !== "active") return `session is ${status ?? "unknown"}`;
-  if (generation !== undefined && generation !== (await ctx.get("generation")))
-    return "the session was stopped after this prompt was sent";
+// ------------------------------------------------------------------ the session
+
+async function exists(ctx: Ctx): Promise<boolean> {
+  return (await ctx.get("status")) !== null;
 }
 
+function markActive(ctx: Ctx, ownerId: string, diskId: string): void {
+  // Restate: object state. ctx.set is committed together with the invocation's progress.
+  ctx.set("status", "active");
+  ctx.set("ownerId", ownerId);
+  ctx.set("diskId", diskId);
+  ctx.set("generation", 0);
+  ctx.console.info(`session created, disk ${diskId}`);
+}
+
+/** Throws (409) if the session is gone, or was stopped after this prompt was sent. */
+async function requireAcceptsPrompts(ctx: Ctx, promptGeneration?: number): Promise<void> {
+  const status = await ctx.get("status");
+  if (status !== "active") throw rejected(`session is ${status ?? "unknown"}`);
+  if (promptGeneration !== undefined && promptGeneration !== (await ctx.get("generation")))
+    throw rejected("the session was stopped after this prompt was sent");
+}
+
+/** Prompts carry the generation they were sent in; bumping it rejects the ones still queued. */
+async function rejectPromptsSentBeforeNow(ctx: Ctx): Promise<void> {
+  ctx.set("generation", ((await ctx.get("generation")) ?? 0) + 1);
+}
+
+function rejected(reason: string) {
+  // Restate: TerminalError fails the call for good (no retries); the code reaches the caller.
+  return new restate.TerminalError(reason, { errorCode: 409 });
+}
+
+// ------------------------------------------------------------------ prompts and turns
+
+async function sendPromptToAgent(ctx: Ctx, sandbox: LiveSandbox, req: PromptRequest): Promise<PromptReply> {
+  const prompt = { messageId: req.messageId, text: req.text, attachmentRefs: req.attachmentRefs };
+  // Restate: ctx.run journals the side effect's result. If it throws, the handler is re-run
+  // and this step executes again (bounded by `retry`); once it succeeds it's never repeated.
+  return ctx.run("send prompt to agent", () => agent.prompt(sandbox.agentUrl, prompt), retry);
+}
+
+function recordTurnStarted(ctx: Ctx, req: PromptRequest, sandbox: LiveSandbox): void {
+  ctx.set("currentTurn", { messageId: req.messageId, turnToken: req.turnToken, sandboxId: sandbox.sandboxId });
+  touch(ctx, sandbox.sandboxId);
+  // Restate: ctx.console logs are suppressed while a journal is being replayed.
+  ctx.console.info(`turn ${req.messageId} started on ${sandbox.sandboxId}`);
+}
+
+function noAgentTookThePrompt() {
+  return new restate.TerminalError(`no agent took the prompt after ${maxDeliveryAttempts} VMs`, { errorCode: 503 });
+}
+
+async function onTurnEnded(ctx: Ctx, event: TurnEnded): Promise<void> {
+  const turn = await ctx.get("currentTurn");
+  if (turn?.messageId !== event.messageId || turn.sandboxId !== event.sandboxId) return; // not this turn
+  endTurn(ctx, turn, { status: "completed" });
+  touch(ctx, event.sandboxId);
+  ctx.console.info(`turn ${event.messageId} ended`);
+}
+
+async function onSandboxStopped(ctx: Ctx, event: SandboxStopped): Promise<void> {
+  await sandbox(ctx, event.sandboxId).markDestroyed({ reason: event.reason }).orTimeout(timeouts.call);
+
+  const turn = await ctx.get("currentTurn");
+  if (turn?.sandboxId !== event.sandboxId) return; // no turn was running on it
+  const reason = event.reason === "crashed" ? "vm died" : "vm destroyed";
+  ctx.console.warn(`${event.sandboxId} stopped mid-turn (${reason})`);
+  endTurn(ctx, turn, { status: "aborted", reason });
+}
+
+/** Wake up the Conversation waiting on this turn. */
+function endTurn(ctx: Ctx, turn: Turn, outcome: TurnOutcome): void {
+  // Restate: complete the awakeable Conversation is waiting on, from a different handler.
+  ctx.resolveAwakeable(turn.turnToken, outcome);
+  ctx.clear("currentTurn");
+}
+
+// ------------------------------------------------------------------ the sandbox
+
 /** The session's running sandbox, or a new one booted on the session's disk. */
-async function liveSandbox(ctx: Ctx): Promise<{ sandboxId: string; agentUrl: string }> {
+async function liveSandbox(ctx: Ctx): Promise<LiveSandbox> {
   const current = await ctx.get("sandboxId");
   if (current) {
-    const vm = await ctx.objectClient(Sandbox, current).getStatus().orTimeout(timeouts.call);
+    const vm = await sandbox(ctx, current).getStatus().orTimeout(timeouts.call);
     if (vm.status === "running") return { sandboxId: current, agentUrl: vm.agentUrl! };
   }
+  return startNewSandbox(ctx, current);
+}
 
-  // Restate: ctx.rand is deterministic. The value is recorded in the journal, so a retry or a
-  // replay gets the same id (and the sandbox service creates the same VM, not a second one).
-  const sandboxId = `sbx-${ctx.rand.uuidv4().slice(0, 8)}`;
+async function startNewSandbox(ctx: Ctx, previous: string | null): Promise<LiveSandbox> {
+  const sandboxId = newSandboxId(ctx);
+  ctx.console.info(previous ? `${previous} is gone, starting ${sandboxId}` : `starting ${sandboxId}`);
+
   const diskId = (await ctx.get("diskId"))!;
-  ctx.console.info(current ? `${current} is gone, starting ${sandboxId}` : `starting ${sandboxId}`);
-
-  const { mountToken, forceMount } = await ctx.objectClient(Disk, diskId).assign({ sandboxId }).orTimeout(timeouts.call);
+  const { mountToken, forceMount } = await disk(ctx, diskId).assign({ sandboxId }).orTimeout(timeouts.call);
   ctx.set("sandboxId", sandboxId);
-  const { agentUrl } = await ctx
-    .objectClient(Sandbox, sandboxId)
+  const { agentUrl } = await sandbox(ctx, sandboxId)
     .start({ diskId, mountToken, forceMount, labels: { sessionId: ctx.key } })
     .orTimeout(startCallTimeout);
   return { sandboxId, agentUrl };
+}
+
+function newSandboxId(ctx: Ctx): string {
+  // Restate: ctx.rand is deterministic. The value is recorded in the journal, so a retry or a
+  // replay gets the same id (and the sandbox service creates the same VM, not a second one).
+  return `sbx-${ctx.rand.uuidv4().slice(0, 8)}`;
+}
+
+/** Dead or hung: make sure it's really gone; the next delivery attempt starts a new one. */
+async function replaceUnreachableSandbox(ctx: Ctx, unreachable: LiveSandbox): Promise<void> {
+  ctx.console.warn(`agent on ${unreachable.sandboxId} is unreachable, replacing the VM`);
+  await sandbox(ctx, unreachable.sandboxId).stop({ reason: "unreachable" }).orTimeout(timeouts.call + timeouts.shutdown);
 }
 
 /** Abort any turn in flight, destroy the sandbox, release the disk. */
@@ -194,13 +248,35 @@ async function stopSandbox(ctx: Ctx, reason: string): Promise<void> {
 
   const sandboxId = await ctx.get("sandboxId");
   if (!sandboxId) return;
-  await ctx.objectClient(Sandbox, sandboxId).stop({ reason }).orTimeout(timeouts.call + timeouts.shutdown);
-  await ctx.objectClient(Disk, (await ctx.get("diskId"))!).release({ sandboxId }).orTimeout(timeouts.call);
+  await sandbox(ctx, sandboxId).stop({ reason }).orTimeout(timeouts.call + timeouts.shutdown);
+  await disk(ctx, (await ctx.get("diskId"))!).release({ sandboxId }).orTimeout(timeouts.call);
 }
 
-/** Wake up the Conversation waiting on this turn. */
-function endTurn(ctx: Ctx, turn: Turn, outcome: TurnOutcome): void {
-  // Restate: complete the awakeable Conversation is waiting on, from a different handler.
-  ctx.resolveAwakeable(turn.turnToken, outcome);
-  ctx.clear("currentTurn");
+/** Activity on the sandbox: push its idle shutdown back. */
+function touch(ctx: Ctx, sandboxId: string): void {
+  // Restate: one-way send. Delivered durably; we don't wait for Sandbox to process it.
+  ctx.objectSendClient(Sandbox, sandboxId).touch();
+}
+
+// ------------------------------------------------------------------ the disk
+
+async function createDisk(ctx: Ctx, ownerId: string): Promise<string> {
+  const diskId = `disk-${ctx.key}`;
+  await disk(ctx, diskId).create({ labels: { sessionId: ctx.key, ownerId } }).orTimeout(timeouts.call);
+  return diskId;
+}
+
+async function deleteDisk(ctx: Ctx): Promise<void> {
+  await disk(ctx, (await ctx.get("diskId"))!).delete().orTimeout(timeouts.call);
+}
+
+// ------------------------------------------------------------------ clients for the other objects
+
+/** Restate: request-response clients for other virtual objects. */
+function sandbox(ctx: Ctx, sandboxId: string) {
+  return ctx.objectClient(Sandbox, sandboxId);
+}
+
+function disk(ctx: Ctx, diskId: string) {
+  return ctx.objectClient(Disk, diskId);
 }
