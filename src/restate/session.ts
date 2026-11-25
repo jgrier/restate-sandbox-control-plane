@@ -7,7 +7,7 @@
 
 import * as restate from "@restatedev/restate-sdk";
 import { agent, type Prompt } from "../clients/agent.js";
-import { startCallTimeout, timeouts } from "../config.js";
+import { maxDeliveryAttempts, startCallTimeout, timeouts } from "../config.js";
 import { retry, statusRead } from "./common.js";
 import { Disk } from "./disk.js";
 import { Sandbox } from "./sandbox.js";
@@ -28,11 +28,8 @@ type Ctx = restate.ObjectContext<SessionState>;
 /** How a turn ends, as reported to the awakeable Conversation is waiting on. */
 export type TurnOutcome = { status: "completed" } | { status: "aborted"; reason: string };
 
-export type DeliverReply =
-  | { status: "admitted"; recovered?: boolean }
-  | { status: "already-completed" }
-  | { status: "gone" } // the sandbox died before the agent took the prompt
-  | { status: "rejected"; reason: string };
+/** deliverPrompt either returns one of these or fails with a TerminalError. */
+export type DeliverReply = { status: "admitted" } | { status: "already-completed" };
 
 export type LifecycleEvent =
   | { eventId: string; type: "turn.ended"; sandboxId: string; messageId: string }
@@ -60,27 +57,35 @@ export const Session = restate.object({
       return liveSandbox(ctx);
     },
 
-    /** Hand one prompt to the agent, starting a sandbox first if needed. Doesn't wait for the turn. */
+    /**
+     * Get the prompt to an agent: start a sandbox if needed, and replace it if its agent turns out
+     * to be unreachable. Either the prompt is delivered, or this fails with a TerminalError (409 if
+     * the session can't take it, 503 if no VM would take it). Doesn't wait for the turn.
+     */
     deliverPrompt: async (ctx: Ctx, req: Prompt & { turnToken: string; generation: number }): Promise<DeliverReply> => {
       const rejected = await rejection(ctx, req.generation);
-      if (rejected) return { status: "rejected", reason: rejected };
+      if (rejected) throw new restate.TerminalError(rejected, { errorCode: 409 });
 
-      const { sandboxId, agentUrl } = await liveSandbox(ctx);
       const prompt = { messageId: req.messageId, text: req.text, attachmentRefs: req.attachmentRefs };
-      const reply = await ctx.run("send prompt to agent", () => agent.prompt(agentUrl, prompt), retry);
+      for (let attempt = 1; attempt <= maxDeliveryAttempts; attempt++) {
+        const { sandboxId, agentUrl } = await liveSandbox(ctx);
+        const reply = await ctx.run("send prompt to agent", () => agent.prompt(agentUrl, prompt), retry);
 
-      if (reply.status === "unreachable") {
-        // Dead or hung: either way, make sure it's really gone before we start another.
-        ctx.console.warn(`agent on ${sandboxId} is unreachable, replacing the VM`);
-        await ctx.objectClient(Sandbox, sandboxId).stop({ reason: "unreachable" }).orTimeout(timeouts.call + timeouts.shutdown);
-        return { status: "gone" };
+        if (reply.status === "unreachable") {
+          // Dead or hung: make sure it's really gone; the next attempt starts a new one.
+          ctx.console.warn(`agent on ${sandboxId} is unreachable, replacing the VM`);
+          await ctx.objectClient(Sandbox, sandboxId).stop({ reason: "unreachable" }).orTimeout(timeouts.call + timeouts.shutdown);
+          continue;
+        }
+        if (reply.status === "admitted") {
+          ctx.set("currentTurn", { messageId: req.messageId, turnToken: req.turnToken, sandboxId });
+          ctx.objectSendClient(Sandbox, sandboxId).touch();
+          ctx.console.info(`turn ${req.messageId} started on ${sandboxId}`);
+          return { status: "admitted" };
+        }
+        return { status: "already-completed" };
       }
-      if (reply.status === "admitted") {
-        ctx.set("currentTurn", { messageId: req.messageId, turnToken: req.turnToken, sandboxId });
-        ctx.objectSendClient(Sandbox, sandboxId).touch();
-        ctx.console.info(`turn ${req.messageId} started on ${sandboxId}${reply.recovered ? " (recovering it)" : ""}`);
-      }
-      return reply;
+      throw new restate.TerminalError(`no agent took the prompt after ${maxDeliveryAttempts} VMs`, { errorCode: 503 });
     },
 
     /**

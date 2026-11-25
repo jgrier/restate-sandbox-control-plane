@@ -7,8 +7,8 @@
 
 import * as restate from "@restatedev/restate-sdk";
 import type { Prompt } from "../clients/agent.js";
-import { maxRecoveries, startCallTimeout, timeouts } from "../config.js";
-import { Session, type TurnOutcome } from "./session.js";
+import { deliverTimeout, timeouts } from "../config.js";
+import { Session, type DeliverReply, type TurnOutcome } from "./session.js";
 
 export type PromptOutcome =
   | { status: "completed" }
@@ -20,32 +20,33 @@ export const Conversation = restate.object({
     deliver: async (ctx: restate.ObjectContext, prompt: Prompt & { generation: number }): Promise<PromptOutcome> => {
       const session = ctx.objectClient(Session, ctx.key);
 
-      for (let attempt = 0; attempt <= maxRecoveries; attempt++) {
-        // The agent's `turn.ended` reaches Session, which completes this awakeable.
-        const turn = ctx.awakeable<TurnOutcome>();
-        const reply = await session.deliverPrompt({ ...prompt, turnToken: turn.id }).orTimeout(startCallTimeout);
+      // The agent's `turn.ended` reaches Session, which completes this awakeable.
+      const turn = ctx.awakeable<TurnOutcome>();
 
-        if (reply.status === "rejected") return { status: "rejected", reason: reply.reason };
-        if (reply.status === "already-completed") return { status: "completed" };
-        if (reply.status === "gone") continue; // the VM vanished first; try again on a new one
-
-        let outcome: TurnOutcome;
-        try {
-          outcome = await turn.promise.orTimeout(timeouts.maxTurn);
-        } catch (e) {
-          if (!(e instanceof restate.TimeoutError)) throw e;
-          await session.discardSandbox({ reason: "turn timed out" }).orTimeout(timeouts.call + timeouts.shutdown);
-          return { status: "failed", reason: "the agent got stuck" };
-        }
-
-        if (outcome.status === "completed") return { status: "completed" };
-        if (outcome.reason === "stopped") return { status: "aborted", reason: "the session was stopped" };
-
-        // The VM died mid-turn. Deliver the same message again: the next agent finds the
-        // unfinished turn in the transcript, repairs it, and carries on.
-        ctx.console.warn(`turn ${prompt.messageId} interrupted (${outcome.reason}), re-driving it on a new sandbox`);
+      // Hand the prompt to an agent. Session deals with dead or hung VMs; this either works
+      // or fails for good.
+      let reply: DeliverReply;
+      try {
+        reply = await session.deliverPrompt({ ...prompt, turnToken: turn.id }).orTimeout(deliverTimeout);
+      } catch (e) {
+        if (!(e instanceof restate.TerminalError)) throw e;
+        return { status: e.code === 409 ? "rejected" : "failed", reason: e.message };
       }
-      return { status: "failed", reason: `gave up after ${maxRecoveries} recovery attempts` };
+      if (reply.status === "already-completed") return { status: "completed" };
+
+      // Wait for the turn to end. The next prompt stays queued until then.
+      let outcome: TurnOutcome;
+      try {
+        outcome = await turn.promise.orTimeout(timeouts.maxTurn);
+      } catch (e) {
+        if (!(e instanceof restate.TimeoutError)) throw e;
+        await session.discardSandbox({ reason: "turn timed out" }).orTimeout(timeouts.call + timeouts.shutdown);
+        return { status: "failed", reason: "the agent got stuck" };
+      }
+
+      // Completed, stopped by the user, or the VM died mid-turn. No re-runs: the next prompt
+      // gets a fresh VM, and the agent marks the unfinished turn as interrupted.
+      return outcome.status === "completed" ? { status: "completed" } : { status: "aborted", reason: outcome.reason };
     },
   },
 });

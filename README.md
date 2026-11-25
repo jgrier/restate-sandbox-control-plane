@@ -20,7 +20,7 @@ For just the processes and the protocols between them, see
 
 | Object | Role | Restate primitives on show |
 |---|---|---|
-| [`Conversation[sessionId]`](src/restate/conversation.ts) | The prompt queue, with no queue code: each prompt is a one-way send, and Restate runs one invocation per key at a time, in order. Runs one turn and waits for it to finish. Re-drives the turn if the VM dies. | per-key serialization, awakeables, timeouts |
+| [`Conversation[sessionId]`](src/restate/conversation.ts) | The prompt queue, with no queue code: each prompt is a one-way send, and Restate runs one invocation per key at a time, in order. Hands the prompt to Session and waits for the turn to finish. No retries: Session deals with unreachable VMs. | per-key serialization, awakeables, timeouts |
 | [`Session[sessionId]`](src/restate/session.ts) | The coordinator: finds or starts the sandbox, hands prompts to the agent, tracks the turn in flight, receives every lifecycle event. | calls between objects, `ctx.run`, resolving awakeables, shared handlers |
 | [`Sandbox[sandboxId]`](src/restate/sandbox.ts) | An opaque VM: boot, touch, destroy. The idle shutdown is a delayed call to itself, cancelled and re-sent on every touch. | durable timers (delayed sends + cancellation) |
 | [`Disk[diskId]`](src/restate/disk.ts) | An opaque disk: create, assign to a sandbox, release, delete. | `ctx.run` with bounded retries |
@@ -58,7 +58,7 @@ of what each object is doing.
 
 1. **New session.** Watch the log: Session creates its Disk, starts a Sandbox, and the agent mounts the disk and takes the first turn.
 2. **Send ×3** while a turn runs. The extra prompts show as *queued*: they're waiting in Restate's own queue for `Conversation[session]`, and run one after another.
-3. **kill -9** a sandbox mid-turn. The turn is aborted, `Conversation` boots a new VM, and the new agent finds the unfinished turn in the transcript, closes the dangling tool call, and completes the turn.
+3. **kill -9** a sandbox mid-turn. The turn ends as *aborted: vm died* and the queue moves on: the next prompt gets a fresh VM on the same disk, and the agent marks the unfinished turn as interrupted in the transcript.
 4. **Wait 30 s**, or click **expire idle**. The VM gets its shutdown hook and is destroyed. Send another prompt: a new VM boots on the same disk, and the agent carries on the conversation.
 5. **Stop** with prompts queued. It returns at once. The turn in flight is aborted, and the queued prompts are rejected.
 6. **Delete.** The VM and the disk are removed, and the session refuses further prompts.

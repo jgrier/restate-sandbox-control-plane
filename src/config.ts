@@ -44,8 +44,11 @@ export const timeouts = {
 /** A call that may boot a VM waits for the boot (with retries) plus a margin. */
 export const startCallTimeout = timeouts.stepRetry + timeouts.boot + 10 * SECOND;
 
-/** How many times a turn is re-driven on a fresh VM after its VM died. */
-export const maxRecoveries = env("MAX_RECOVERIES", 2);
+/** How many VMs deliverPrompt tries before giving up on getting the prompt to an agent. */
+export const maxDeliveryAttempts = env("MAX_DELIVERY_ATTEMPTS", 3);
+
+/** deliverPrompt may boot a VM on every attempt. */
+export const deliverTimeout = maxDeliveryAttempts * startCallTimeout;
 
 /** Echo-agent pacing, per streamed word. */
 export const turnDelayMs = env("TURN_DELAY_MS", 60);
